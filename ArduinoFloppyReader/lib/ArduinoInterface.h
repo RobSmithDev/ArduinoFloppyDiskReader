@@ -1,4 +1,4 @@
-/* ArduinoFloppyReader
+/* ArduinoFloppyReader (and writer)
 *
 * Copyright (C) 2017 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk
@@ -31,10 +31,12 @@
 #pragma once
 #include <Windows.h>
 
-// Paula on the Amiga used to find the SYNC then read 1900 WORDS.
+// Paula on the Amiga used to find the SYNC then read 1900 WORDS. (12868 bytes)
 // As the PC is doing the SYNC we need to read more than this to allow a further overlap
 // This number must match what the sketch in the Arduino is set to. 
-#define RAW_TRACKDATA_LENGTH    (0x1900*2+0x800)
+#define RAW_TRACKDATA_LENGTH    (0x1900*2+0x440)
+// With the disk spinning at 300rpm, and data rate of 500kbps, for a full revolution we should receive 12500 bytes of data (12.5k)
+// The above buffer assumes a full Paula data capture plsu the size of a sector.
 
 
 namespace ArduinoFloppyReader {
@@ -64,6 +66,7 @@ namespace ArduinoFloppyReader {
 		// Windows handle to the serial port device
 		HANDLE			m_comPort;
 		FirmwareVersion m_version;
+		bool			m_inWriteMode;
 
 		// Read a desired number of bytes into the target pointer
 		bool deviceRead(void* target, const unsigned int numBytes);
@@ -81,6 +84,7 @@ namespace ArduinoFloppyReader {
 		~ArduinoInterface();
 
 		const bool isOpen() const { return m_comPort != INVALID_HANDLE_VALUE; };
+		const bool isInWriteMode() const { return m_inWriteMode; };
 
 		// Get the current firmware version.  Only valid if openPort is successful
 		const FirmwareVersion getFirwareVersion() const { return m_version; };
@@ -88,7 +92,10 @@ namespace ArduinoFloppyReader {
 		// Turns on and off the reading interface
 		InterfaceResult enableReading(const bool enable, const bool reset = true);
 
-		// Attempts to open the reader running on the COM port number provided.  Port MUST support 1M baud
+		// Turns on and off the reading interface. If irError is returned the disk is write protected
+		InterfaceResult enableWriting(const bool enable, const bool reset = true);
+
+		// Attempts to open the reader running on the COM port number provided.  Port MUST support 2M baud
 		InterfaceResult openPort(const unsigned int portNumber);
 
 		// Select the track, this makes the motor seek to this position
@@ -97,8 +104,11 @@ namespace ArduinoFloppyReader {
 		// Choose which surface of the disk to read from
 		InterfaceResult selectSurface(const DiskSurface side);
 
-		// Read RAW data from the current track and surface selected using the supplied phase.  Phase must be 0123456789ABCDEF - see notes
-		InterfaceResult readCurrentTrack(const char phase, RawTrackData& trackData);
+		// Read RAW data from the current track and surface selected 
+		InterfaceResult readCurrentTrack(RawTrackData& trackData, const bool readFromIndexPulse);
+
+		// Attempts to write a sector back to the disk.  This must be pre-formatted and MFM encoded correctly
+		InterfaceResult writeCurrentTrack(const unsigned char*, const unsigned short numBytes, const bool writeFromIndexPulse);
 
 		// Returns true if the track actually contains some data, else its considered blank or unformatted
 		bool trackContainsData(const RawTrackData& trackData);

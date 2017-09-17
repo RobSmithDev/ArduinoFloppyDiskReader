@@ -146,14 +146,12 @@
   <ItemGroup>
     <ClInclude Include="..\lib\ADFWriter.h" />
     <ClInclude Include="..\lib\ArduinoInterface.h" />
-    <ClInclude Include="..\lib\phaseAnalyser.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="targetver.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\lib\ADFWriter.cpp" />
     <ClCompile Include="..\lib\ArduinoInterface.cpp" />
-    <ClCompile Include="..\lib\phaseAnalyser.cpp" />
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>

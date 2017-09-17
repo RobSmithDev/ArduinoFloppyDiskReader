@@ -1,4 +1,4 @@
-/* ArduinoFloppyReader
+/* ArduinoFloppyReader (and writer)
 *
 * Copyright (C) 2017 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk
@@ -18,14 +18,13 @@
 */
 
 
-////////////////////////////////////////////////////////////////////////////////////////
-// This sketch manages the interface between the floppy drive and the computer        //
-// as well as the low-level disk reading.  For more information and how to connect    //
-// your Arduino to a floppy drive and computer visit http://amiga.robsmithdev.co.uk   //
-////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////
+// This sketch manages the interface between the floppy drive and the computer as well as the     //
+// low-level disk reading and writing.  For more information and how to connect your Arduino     //
+// to a floppy drive and computer visit http://amiga.robsmithdev.co.uk                          //
+/////////////////////////////////////////////////////////////////////////////////////////////////
 
-//#define F_CPU 16000000UL               // Current clock frequency - this is already defined by the Arduino code
-#define BAUDRATE 1000000                 // The baudrate that we want to communicate over (1M)
+#define BAUDRATE 2000000                 // The baudrate that we want to communicate over (2M)
 #define BAUD_PRESCALLER_NORMAL_MODE      (((F_CPU / (BAUDRATE * 16UL))) - 1)
 #define BAUD_PRESCALLER_DOUBLESPEED_MODE (((F_CPU / (BAUDRATE * 8UL))) - 1)
 #define UART_USE_DOUBLESPEED_MODE        // We're using double speed mode
@@ -33,20 +32,54 @@
 #define MOTOR_TRACK_DECREASE   HIGH      // Motor directions for PIN settings
 #define MOTOR_TRACK_INCREASE   LOW
 
-#define PIN_DRIVE_ENABLE_MOTOR   5        // Turn on and off the motor on the drive
-#define PIN_DETECT_TRACK_0       8        // Used to see if the drive is at track 0
+// PIN 2 - INDEX PULSE PIN - used to detect a specific point on the track for sync.  Not used by standard Amiga disks but some copy protection uses it.
+#define PIN_INDEX_DETECTED       2          // Pin used to detect the index pulse
+#define PIN_INDEX_PORT           PIND
+#define PIN_INDEX_MASK           B00000100
 
+// PIN 3 - WRITE DATA
+#define PIN_WRITE_DATA           3        // Raw triggering of writing data to the disk
+#define PIN_WRITE_DATA_PORT      PORTD     // The actual port the above pin is on
+#define PIN_WRITE_DATA_MASK      B00001000 // The mask used to set this pin high or low
+
+// PIN 4 - READ DATA
+#define PIN_READ_DATA            4          // Reads RAW floppy data on this pin
+#define PIN_READ_DATA_MASK       B00010000  // The mask for the port
+#define PIN_READ_DATA_PORT       PIND       // The port the above pin is on
+
+// PIN 5, 6 and 7 - DRIVE, HEAD MOTOR DIRECTION and CONTROL
+#define PIN_DRIVE_ENABLE_MOTOR   5        // Turn on and off the motor on the drive
 #define PIN_MOTOR_DIR            6        // Stepper motor output to choose the direction the head should move
 #define PIN_MOTOR_STEP           7        // Stepper motor step line to move the head position
+
+// PIN 8 - Used to detect track 0 while moving the head
+#define PIN_DETECT_TRACK_0       8        // Used to see if the drive is at track 0
+
+// PIN 9 - HEAD SELECTION
 #define PIN_HEAD_SELECT          9        // Choose upper and lower head on the drive
-#define PIN_ACTIVITY_LED         13       // Standard LED on Arduinos.  We're just using this as a read status flag
-
-#define PIN_INT0_PIN             2         // The Pin that is used for INT0 input.  This is physically connected to the PIN_RAW_FLOPPYDTA pin 
-#define PIN_RAW_FLOPPYDATA       4         // The pin the floppy drive data is connected to.  This is the external Timer0/Counter0 trigger pin
 
 
-// Paula on the Amiga used to find the SYNC WORDS and then read 0x1900 further WORDS.  We're not doing that (the PC is) so we need to read more data than this to compensate for this (so we read 1.25 this amount)
-#define RAW_TRACKDATA_LENGTH   (0x1900*2+0x800)      // Number of bytes to read.  0x1900x2 (standard read) + 0x800 - hald the read again
+// PIN A0 - WRITE GATE (Floppy Write Enable)
+#define PIN_WRITE_GATE           A0        // This pin enables writing to the disk
+#define PIN_WRITE_GATE_PORT      PORTC    // The actual port the above pin is on
+#define PIN_WRITE_GATE_MASK      B00000001 // The port pin mask for the gate
+
+// PIN A1 - CHECK WRITE PROTECTION
+#define PIN_WRITE_PROTECTED      A1         // To check if the disk is write protected
+
+// PIN A2 - CTS Pin from UART
+#define PIN_CTS                  A2         // Pin linked to the CTS pin
+#define PIN_CTS_PORT             PORTC      // Port the CTS pin is on
+#define PIN_CTS_MASK             B00000100  // Binary mask to control it with
+
+// PIN 13 - Activity LED
+#define PIN_ACTIVITY_LED         13       // Standard LED on Arduinos.  We're just using this as a read/write status flag
+
+
+
+
+// Paula on the Amiga used to find the SYNC WORDS and then read 0x1900 further WORDS.  A dos track is 11968 bytes in size, theritical revolution is 12800 bytes. 
+#define RAW_TRACKDATA_LENGTH   (0x1900*2+0x440)         // Paula assumed it was 12868 bytes, so we read that, plus thre size of a sectors
 
 // The current track that the head is over
 int currentTrack = 0;
@@ -54,23 +87,30 @@ int currentTrack = 0;
 // If the drive has been switched on or not
 bool driveEnabled  = 0;
 
+// If we're in WRITING mode or not
+bool inWriteMode = 0;
 
 
-// We're using Timer0 as a counter.  This is normally used by the Arduino delay() function. This is a poor rough approxamation, but enough for what we need
+
+
+
+
+// Because we turned off interrupts delay() doesnt work!
 void smalldelay(unsigned long delayTime) {
-  delayTime*=(F_CPU/(9*1000L));
+    delayTime*=(F_CPU/(9*1000L));
   
-  for (unsigned long loops=0; loops<delayTime; ++loops) {
-      asm volatile("nop\n\t"::);
-  }
+    for (unsigned long loops=0; loops<delayTime; ++loops) {
+        asm volatile("nop\n\t"::);
+    }
 }
+
 
 // Step the head once.  This seems to be an acceptable speed for the head
 void stepDirectionHead() {
-  smalldelay(5);
-  digitalWrite(PIN_MOTOR_STEP,LOW);
-  smalldelay(5);
-  digitalWrite(PIN_MOTOR_STEP,HIGH);
+    smalldelay(5);
+    digitalWrite(PIN_MOTOR_STEP,LOW);
+    smalldelay(5);
+    digitalWrite(PIN_MOTOR_STEP,HIGH);
 }
 
 // Prepare serial port - We dont want to use the arduino serial library as we want to use faster speeds and no serial interrupts
@@ -108,11 +148,9 @@ void prepSerialInterface() {
               (1<<UCSZ01)  | (1<<UCSZ00);    // UsartCharacterSiZe  - 8-bit (00=5Bit, 01=6Bit, 10=7Bit, 11=8Bit, must be 11 for 9-bit)
 }
 
-
-
 // Directly read a byte from the UART0 (serial)
 inline byte readByteFromUART() {
-    while (( UCSR0A & ( 1 << RXC0 )) == 0){};    // Wait for data to be available
+    while (!( UCSR0A & ( 1 << RXC0 ))){};    // Wait for data to be available
     return UDR0;                                 // Read it
 }
 
@@ -122,52 +160,46 @@ inline void writeByteToUART(const char value) {
     UDR0 = value;                                 // And send another
 }
 
-
 // Main arduino setup 
 void setup() {
+    // Do these right away to prevent the disk being written to
+    digitalWrite(PIN_WRITE_GATE, HIGH);
+    digitalWrite(PIN_WRITE_DATA, HIGH);
+    pinMode(PIN_WRITE_GATE,OUTPUT);
+    pinMode(PIN_WRITE_DATA,OUTPUT);
+    pinMode(PIN_CTS,OUTPUT);
+
+    pinMode(PIN_WRITE_PROTECTED, INPUT_PULLUP);
+    pinMode(PIN_DETECT_TRACK_0, INPUT_PULLUP);
+    pinMode(PIN_READ_DATA,INPUT_PULLUP);
+
+    pinMode(PIN_INDEX_DETECTED,INPUT);
+
     // Prepre the pin inputs and outputs
     pinMode(PIN_DRIVE_ENABLE_MOTOR, OUTPUT);
-    digitalWrite(PIN_DRIVE_ENABLE_MOTOR,HIGH);
     pinMode(PIN_HEAD_SELECT, OUTPUT);
+    digitalWrite(PIN_DRIVE_ENABLE_MOTOR,HIGH);
     digitalWrite(PIN_HEAD_SELECT,LOW);    
     
     pinMode(PIN_MOTOR_DIR, OUTPUT);
     pinMode(PIN_MOTOR_STEP,OUTPUT);
-    pinMode(PIN_DETECT_TRACK_0, INPUT_PULLUP);
-    pinMode(PIN_RAW_FLOPPYDATA,INPUT_PULLUP);
-    pinMode(PIN_INT0_PIN,INPUT_PULLUP);
     pinMode(PIN_ACTIVITY_LED,OUTPUT);
+    
     digitalWrite(PIN_ACTIVITY_LED,LOW);
    
-    // Disable all interrupts and mask them all off
+    // Disable all interrupts - we dont want them!
     cli();
     TIMSK0=0;
     TIMSK1=0;
     TIMSK2=0;
-
-    // Configure Timer 0 as a counter, triggered as a result a falling edge on port pin 4, as follows:
-    // See https://sites.google.com/site/qeewiki/books/avr-guide/counter-atmega328 for more information
-    TCCR0A = B00000000;    
-    TCCR0B = (1 << CS02) | (1 << CS01) | (0 << CS00);  // Turn on counter 0, T0, on Clock FALLING edge
-    // TCCR0B = (1 << CS02) | (1 << CS01) | (1 << CS00);  // Turn on counter 0, T0, on Clock RISING edge
-    TIFR0 = 0;
-
-    // We also want an interrupt generated in response to this.  INT0 is the best for this.  Pin 4 and Pin 2 are wired together
-    EICRA = (1 <<ISC01 ) | (0 << ISC00 );    // FALLING EDGE triggers the interrupt on Pin 2
-    // EICRA = (1 <<ISC01 ) | (1 << ISC00 );    // RISING Edge
-    EIMSK = (1 << INT0);  // Enable an interrupt to occur when this happens    
-
-    // Make sure no other interrupts are enabled or allowed to execute.  The timing is so important we dont want anything else messing it up
     PCICR = 0;
     PCIFR = 0;
     PCMSK0 = 0;
     PCMSK2 = 0;
     PCMSK1 = 0;
-
     // Setup the USART
     prepSerialInterface();
 }
-
 
 // Rewinds the head back to Track 0
 void goToTrack0() {
@@ -179,79 +211,173 @@ void goToTrack0() {
 
 // Goto a specific track.  During testing it was easier for the track number to be supplied as two ASCII characters, so I left it like this
 bool gotoTrackX() {
-   // Read the bytes
-   byte track1 = readByteFromUART();
-   byte track2 = readByteFromUART();
+    // Read the bytes
+    byte track1 = readByteFromUART();
+    byte track2 = readByteFromUART();
 
-   // Validate
-   if ((track1<'0') || (track1>'9')) return false;
-   if ((track2<'0') || (track2>'9')) return false;
+    // Validate
+    if ((track1<'0') || (track1>'9')) return false;
+    if ((track2<'0') || (track2>'9')) return false;
 
-   // Calculate target track and validate 
-   int track = ((track1-'0')*10) + (track2-'0');
-   if (track<0) return false;
-   if (track>81) return false; // yes amiga could read track 81!
+    // Calculate target track and validate 
+    int track = ((track1-'0')*10) + (track2-'0');
+    if (track<0) return false;
+    if (track>81) return false; // yes amiga could read track 81!
 
-   // Exit if its already been reached
-   if (track == currentTrack) return true;
+    // Exit if its already been reached
+    if (track == currentTrack) return true;
 
-   // And step the head until we reach this track number
-   if (currentTrack < track) {
-      digitalWrite(PIN_MOTOR_DIR,MOTOR_TRACK_INCREASE);   // Move OUT
-      while (currentTrack < track) {
-         stepDirectionHead();
-         currentTrack++;         
-      }
-   } else {
-      digitalWrite(PIN_MOTOR_DIR,MOTOR_TRACK_DECREASE);   // Move IN
-      while (currentTrack > track) {
-         stepDirectionHead();
-         currentTrack--;
-      }
-   }
+    // And step the head until we reach this track number
+    if (currentTrack < track) {
+        digitalWrite(PIN_MOTOR_DIR,MOTOR_TRACK_INCREASE);   // Move OUT
+        while (currentTrack < track) {
+            stepDirectionHead();
+            currentTrack++;         
+        }
+    } else {
+        digitalWrite(PIN_MOTOR_DIR,MOTOR_TRACK_DECREASE);   // Move IN
+        while (currentTrack > track) {
+            stepDirectionHead();
+            currentTrack--;
+        }
+    }
 
-   return true;
+    return true;
 }
 
 
-// We declare a variable called targetPhase and make it available to the ASM code
-volatile byte targetPhase asm ("targetPhase");
+// 256 byte circular buffer - don't change this, we abuse the unsigned char to overflow back to zero!
+#define SERIAL_BUFFER_SIZE 256
+#define SERIAL_BUFFER_START (SERIAL_BUFFER_SIZE-16)
+unsigned char SERIAL_BUFFER[SERIAL_BUFFER_SIZE];
 
 
-// Trigger ISR from T0 pin - we literally just use this to re-sync the bit-phase
-// We could have done this with the TIMER0_OVF_vect, but INT0_vect is the highest priority and TIMER0_OVF_vect is already used by the Arduino library
-// As we're in "NAKED" mode the compiler doesnt do anything to preserve state so we have to do *everything* which means we can write a much smaller ISR
-ISR (INT0_vect, ISR_NAKED) {
-  // Three instructions probably means the phase is 3 points out of alignment
-  asm volatile("push __tmp_reg__");                                         // Preserve the tmp_register
-  asm volatile("lds __tmp_reg__, targetPhase");                             // Copy the phase value into the tmp_register
-  asm volatile("sts %0, __tmp_reg__" : : "M" (_SFR_MEM_ADDR(TCNT2)));       // Copy the tmp_register into the memory location where TCNT2 is (timer 2 count position - 500khz phase)
-  asm volatile("pop __tmp_reg__");                                          // Restore the tmp_register
-  asm volatile("reti");                                                     // And exit the ISR
-
-  // The above equates to this without NAKED mode
-  // TCNT2=targetPhase;
-}
+#define CHECK_SERIAL()          if (UCSR0A & ( 1 << RXC0 )) {                      \
+                                    SERIAL_BUFFER[serialWritePos++] = UDR0;        \
+                                    serialBytesInUse++;                            \
+                                } else                                             \
+                                if (serialBytesInUse<SERIAL_BUFFER_START) {        \
+                                    PIN_CTS_PORT &= (~PIN_CTS_MASK);               \
+                                    PIN_CTS_PORT|=PIN_CTS_MASK;                    \
+                                }
+                                            
 
 
-// Read the track using a very basic Phase-Locked Loop implementation (we just re-sync our timer when we see a pulse)
-void readTrackDataPLL() {
-    // Read the sync-phase position as HEX from 0123456789ABCDEF.  Theriticially around 7/8 should be the best 
-    byte phase = readByteFromUART();
-    if ((phase>='0') && (phase<='9')) phase-='0'; else
-    if ((phase>='A') && (phase<='F')) phase=phase-'A'+10; else phase=7; // on error default to 7
-    targetPhase = phase;
+// Small Macro to write a '1' pulse to the drive if a bit is set based on the supplied bitmask
+#define WRITE_BIT(value,bitmask) if (currentByte & bitmask)  {                           \
+                                     while (TCNT2<value) {};                             \
+                                     PIN_WRITE_DATA_PORT&=~PIN_WRITE_DATA_MASK;          \
+                                 } else {                                                \
+                                     while (TCNT2<value) {};                             \
+                                     PIN_WRITE_DATA_PORT|=PIN_WRITE_DATA_MASK;           \
+                                 }
+ 
+
+// Write a track to disk from the UART - the data should be pre-MFM encoded raw track data where '1's are the pulses/phase reversals to trigger
+void writeTrackFromUART() {
+    // Configure timer 2 just as a counter in NORMAL mode
+    TCCR2A = 0 ;              // No physical output port pins and normal operation
+    TCCR2B = bit(CS20);       // Precale = 1  
     
-    // Configure timer 2 as PWM, Phase-correct, counter/timer.  But we're not going to actually output this on any pins.  
-    // The counter counts until ot gets to the value in OCR2A.  This would be for 300rpm floppy.
-    // This is calculated as:  25 uSec period (500khz)  - OCRA = (PERIOD / (TICKS/PRESCALER)) / 2  = (2uS / 62.5ns) / 2
-    TCCR2A = bit(WGM20) ;       // No physical output port pins
-    TCCR2B = bit(WGM22) | 1;   // Precale = 1  
-    OCR2A = 16;                // Number of Counts 16 - which gives 500khz.  
+    // Check if its write protected.  You can only do this after the write gate has been pulled low
+    if (digitalRead(PIN_WRITE_PROTECTED) == LOW) {
+        writeByteToUART('N'); 
+        digitalWrite(PIN_WRITE_GATE,HIGH);
+        return;
+    } else writeByteToUART('Y');
 
-    // Uncomment the following to see the 500Khz(ish) square wave on pin 11
-    //TCCR2A|= bit (COM2A0);
-    //                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    pinMode(11, OUTPUT); 
+    // Find out how many bytes they want to send
+    unsigned char highByte = readByteFromUART();
+    unsigned char lowByte = readByteFromUART();
+    unsigned char waitForIndex = readByteFromUART();
+    PIN_CTS_PORT|=PIN_CTS_MASK;                // stop any more data coming in!
+    
+    unsigned short numBytes = (((unsigned short)highByte)<<8) | lowByte;
+
+    writeByteToUART('!');
+    
+    register unsigned char currentByte;
+
+    // Signal we're ready for another byte to come
+    PIN_CTS_PORT &= (~PIN_CTS_MASK);   
+
+    // Fill our buffer to give us a head start
+    for (int a=0; a<SERIAL_BUFFER_START; a++) {
+        // Wait for it
+        while (!( UCSR0A & ( 1 << RXC0 ))){}; 
+        // Save the byte
+        SERIAL_BUFFER[a] = UDR0;
+    }
+
+    // Stop more bytes coming in, although we expect one more
+    PIN_CTS_PORT|=PIN_CTS_MASK; 
+
+    // Setup buffer parameters
+    unsigned char serialReadPos = 0;
+    unsigned char serialWritePos = SERIAL_BUFFER_START;
+    unsigned int serialBytesInUse = SERIAL_BUFFER_START;
+    digitalWrite(PIN_ACTIVITY_LED,HIGH);
+   
+    // Enable writing
+    PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
+
+    // While the INDEX pin is high wait.  Might as well write from the start of the track
+    if (waitForIndex) 
+        while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
+
+    // Reset the counter, ready for writing
+    TCNT2=0;  
+    
+    // Loop them bytes
+    for (register unsigned int a=0; a<numBytes; a++) {
+        // Should never happen, but we'll wait here if theres no data 
+        if (serialBytesInUse<1) {
+            // This can;t happen and causes a write failure
+            digitalWrite(PIN_ACTIVITY_LED,LOW);
+            writeByteToUART('X');   // Thus means buffer underflow. PC wasn't sending us data fast enough
+            PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;
+            TCCR2B = 0;   // No Clock (turn off)                
+            return;
+        }
+
+        // Read a buye from the buffer
+        currentByte = SERIAL_BUFFER[serialReadPos++]; 
+        serialBytesInUse--;
+        
+
+        // Now we write the data.  Hopefully by the time we get back to the top everything is ready again
+        WRITE_BIT(16,B10000000);
+        CHECK_SERIAL();
+        WRITE_BIT(48,B01000000);
+        CHECK_SERIAL();
+        WRITE_BIT(80,B00100000);
+        CHECK_SERIAL();
+        WRITE_BIT(112,B00010000);
+        CHECK_SERIAL();
+        WRITE_BIT(144,B00001000);
+        CHECK_SERIAL();
+        WRITE_BIT(176,B00000100);
+        CHECK_SERIAL();
+        WRITE_BIT(208,B00000010);
+        CHECK_SERIAL();
+        WRITE_BIT(240,B00000001);
+    }  
+    PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;
+
+    // Done!
+    writeByteToUART('1');
+    digitalWrite(PIN_ACTIVITY_LED,LOW);
+    
+    // Disable the 500khz signal
+    TCCR2B = 0;   // No Clock (turn off)    
+}
+
+
+// Read the track using a timings to calculate which MFM sequence has been triggered
+void readTrackDataFast() {
+    // Configure timer 2 just as a counter in NORMAL mode
+    TCCR2A = 0 ;              // No physical output port pins and normal operation
+    TCCR2B = bit(CS20);       // Precale = 1  
     
     // First wait for the serial port to be available
     while(!(UCSR0A & (1<<UDRE0)));   
@@ -259,122 +385,172 @@ void readTrackDataPLL() {
     // Signal we're active
     digitalWrite(PIN_ACTIVITY_LED,HIGH);
 
-    // Prepare the two counter values as follows:
-    TCNT2=0;       // Reset the 500khz signal to trigger at maximum interval from now
-    TCNT0=0;       // reset pulse detection counter
-
     // Force data to be stored in a register
     register unsigned char DataOutputByte = 0;
 
-    // Start interrupts.  There should only be one that actually triggers
-    sei();
+    // While the INDEX pin is high wait if the other end requires us to
+    if (readByteFromUART())
+        while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
 
-    // loop for the pre-arranged amount of bytes
-    for (register unsigned int a=0; a<RAW_TRACKDATA_LENGTH; a++) {
-        // Loop for all 8 bits
-        for (register unsigned char b=0; b<8; b++) {                                             
-            DataOutputByte<<=1;                     // Make space for the next bit
+    // Prepare the two counter values as follows:
+    TCNT2=0;       // Reset the counter
+
+    register unsigned char counter;
+    long totalBits=0;
+    long target = ((long)RAW_TRACKDATA_LENGTH)*(long)8;
+
+    while (totalBits<target) {
+        for (register unsigned char bits=0; bits<4; bits++) {
+            // Wait while pin is high
             
-            // Wait for the 500khz overflow - this gets messed with in the ISR
-            while (!(TIFR2&_BV(TOV2))) {};
+            while (PIN_READ_DATA_PORT & PIN_READ_DATA_MASK) {};
+            counter = TCNT2, TCNT2 = 0;  // reset - must be done with a COMMA
+           
+            DataOutputByte<<=2;   
+
+            // DO NOT USE BRACES HERE, use the "," or the optomiser messes it up
+            if (counter<80) DataOutputByte|=B00000001,totalBits+=2; else    // this accounts for just a '1' or a '01' as two '1' arent allowed in a row
+            if (counter>111) DataOutputByte|=B00000011,totalBits+=4; else DataOutputByte|=B00000010,totalBits+=3;
             
-            TIFR2|=_BV(TOV2);                       // And reset the 500khz overflow flag
-            
-            if (TCNT0) {                            // Did we detect any external pulses? 
-              DataOutputByte|=1;                    // Yes.  Add a bit to relate to this
-              TCNT0=0;                              // Reset our pulse counter 
-            }
+            // Wait until pin is high again
+            while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};
         }
-        
-        // When 8 bits have been received send them over the serial port
         UDR0 = DataOutputByte;
-    }    
-
-    // Turn off interrupts 
-    cli();
+    }
+    // Because of the above rules the actual valid two-bit sequences output are 01, 10 and 11, so we use 00 to say "END OF DATA"
+    writeByteToUART(0);
 
     // turn off the status LED
     digitalWrite(PIN_ACTIVITY_LED,LOW);
 
-    // Disable the 500khz signal
-    TCCR2A = bit(WGM20);       // No physical output port pins
-    TCCR2B = bit(WGM22) | 0;   // No Clock (turn off)    
+    // Disable the counter
+    TCCR2B = 0;      // No Clock (turn off)    
 }
+
 
 
 
 // The main command loop
 void loop() {
-  // Read the command from the PC
-  byte command = readByteFromUART();
+    PIN_CTS_PORT &= (~PIN_CTS_MASK);            // Allow data incoming
+    PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;   // always turn writing off
+  
+    // Read the command from the PC
+    byte command = readByteFromUART();
 
-  switch (command) {
-
-      // Command: "?" Means information about the firmware
-      case '?':writeByteToUART('1');  // Success
-               writeByteToUART('V');  // Followed
-               writeByteToUART('1');  // By
-               writeByteToUART('.');  // Version
-               writeByteToUART('0');  // Number
-               break;
-
-      // Command "." means go back to track 0
-      case '.': if (!driveEnabled) writeByteToUART('0'); else {
-                 goToTrack0();    // reset 
-                 writeByteToUART('1');
-               }  
-               break;
-
-      // Command "#" means goto track.  Should be formatted as #00 or #32 etc
-      case '#': // Goto Track
-                if (!driveEnabled) {
-                    readByteFromUART();
-                    readByteFromUART();
-                    writeByteToUART('0'); 
-                } else
-                if (gotoTrackX()) {
-                    smalldelay(100); // wait for drive
-                    writeByteToUART('1');
-                } else writeByteToUART('0');
-                break;
-
-      // Command "[" select LOWER disk side
-      case '[': digitalWrite(PIN_HEAD_SELECT,LOW);
-                writeByteToUART('1');
-                break;
-
-      // Command "]" select UPPER disk side
-      case ']': digitalWrite(PIN_HEAD_SELECT,HIGH);
-                writeByteToUART('1');
-                break;
-
-      // Command "<" Read track from the drive
-      case '<': if (!driveEnabled) writeByteToUART('0'); else {
+    switch (command) {
+  
+        // Command: "?" Means information about the firmware
+        case '?':writeByteToUART('1');  // Success
+                 writeByteToUART('V');  // Followed
+                 writeByteToUART('1');  // By
+                 writeByteToUART('.');  // Version
+                 writeByteToUART('1');  // Number
+                 break;
+  
+        // Command "." means go back to track 0
+        case '.': if (!driveEnabled) writeByteToUART('0'); else {
+                   goToTrack0();    // reset 
                    writeByteToUART('1');
-                   readTrackDataPLL();
-                }
-                break;
-
-      // Command ">" Write track to the drive
-      case '>': writeByteToUART('0');  // Not implemented yet
-                break;
-
-      // Turn off the drive motor
-      case '-': digitalWrite(PIN_DRIVE_ENABLE_MOTOR,HIGH);
-                driveEnabled = 0;
-                writeByteToUART('1');
-                break;
-
-     // Turn on the drive motor
-     case '+': digitalWrite(PIN_DRIVE_ENABLE_MOTOR,LOW);
-                driveEnabled = 1;
-                smalldelay(750); // wait for drive
-                writeByteToUART('1');
-                break;
-
-    // We don't recognise the command!
-    default:
-               writeByteToUART('!'); // error
-               break;
-   }
+                 }  
+                 break;
+  
+        // Command "#" means goto track.  Should be formatted as #00 or #32 etc
+        case '#': // Goto Track
+                  if (!driveEnabled) {
+                      readByteFromUART();
+                      readByteFromUART();
+                      writeByteToUART('0'); 
+                  } else
+                  if (gotoTrackX()) {
+                      smalldelay(100); // wait for drive
+                      writeByteToUART('1');
+                  } else writeByteToUART('0');
+                  break;
+  
+        // Command "[" select LOWER disk side
+        case '[': digitalWrite(PIN_HEAD_SELECT,LOW);
+                  writeByteToUART('1');
+                  break;
+  
+        // Command "]" select UPPER disk side
+        case ']': digitalWrite(PIN_HEAD_SELECT,HIGH);
+                  writeByteToUART('1');
+                  break;
+  
+        // Command "<" Read track from the drive
+        case '<': if (!driveEnabled) writeByteToUART('0'); else {
+                     writeByteToUART('1');
+                     readTrackDataFast();
+                  }
+                  break;
+  
+        // Command ">" Write track to the drive
+        case '>': if (!driveEnabled) writeByteToUART('0'); else
+                  if (!inWriteMode) writeByteToUART('0'); else {
+                     writeByteToUART('1');
+                     writeTrackFromUART();
+                  }
+                  break;
+  
+        // Turn off the drive motor
+        case '-': digitalWrite(PIN_DRIVE_ENABLE_MOTOR,HIGH);
+                  digitalWrite(PIN_WRITE_GATE,HIGH);
+                  driveEnabled = 0;
+                  writeByteToUART('1');
+                  inWriteMode = 0;
+                  break;
+  
+       // Turn on the drive motor and setup in READ MODE
+       case '+':  if (inWriteMode) {
+                     // Ensure writing is turned off
+                     digitalWrite(PIN_DRIVE_ENABLE_MOTOR,HIGH);
+                     digitalWrite(PIN_WRITE_GATE,HIGH);
+                     smalldelay(100);
+                     driveEnabled = 0;
+                     inWriteMode = 0;
+                  }
+       
+                  if (!driveEnabled) {
+                     digitalWrite(PIN_DRIVE_ENABLE_MOTOR,LOW);
+                     driveEnabled = 1;
+                     smalldelay(750); // wait for drive
+                  }
+                  writeByteToUART('1');
+                  break;
+  
+       // Turn on the drive motor and setup in WRITE MODE
+       case '~':  if (driveEnabled) {
+                      digitalWrite(PIN_WRITE_GATE,HIGH);
+                      digitalWrite(PIN_DRIVE_ENABLE_MOTOR,HIGH);
+                      driveEnabled = 0;
+                      smalldelay(100);
+                  }
+                  // We're writing!
+                  digitalWrite(PIN_WRITE_GATE,LOW);
+                  // Gate has to be pulled LOW BEFORE we turn the drive on
+                  digitalWrite(PIN_DRIVE_ENABLE_MOTOR,LOW);
+                  // Raise the write gate again                    
+                  digitalWrite(PIN_WRITE_GATE,HIGH);                
+                  smalldelay(750); // wait for drive
+                  
+                  // At this point we can see the status of the write protect flag
+                  if (digitalRead(PIN_WRITE_PROTECTED) == LOW) {
+                      writeByteToUART('0');
+                      inWriteMode = 0;
+                      digitalWrite(PIN_DRIVE_ENABLE_MOTOR,HIGH);
+                      //digitalWrite(PIN_WRITE_GATE,HIGH);
+                  } else  {
+                     inWriteMode = 1;
+                     driveEnabled = 1;           
+                     writeByteToUART('1');
+                  }                
+                  break;
+  
+  
+      // We don't recognise the command!
+      default:
+                 writeByteToUART('!'); // error
+                 break;
+     }
 }

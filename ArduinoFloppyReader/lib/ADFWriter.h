@@ -1,4 +1,4 @@
-/* ArduinoFloppyReader
+/* ArduinoFloppyReader (and writer)
 *
 * Copyright (C) 2017 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk
@@ -24,6 +24,8 @@
 // Purpose:
 // This class reads the raw data from the device and attemps to check for errors.
 // Once all errors have been corrected the class will save the tracks to disk as an ADF file
+//
+// The class also handles writing an ADF file back to disk and optionally verifying the write.
 // 
 // The MFM decoding algorithm and information regarding finding the start of a sector
 // were taken from the excellent documentation by Laurent Clévy at http://lclevy.free.fr/adflib/adf_info.html
@@ -32,10 +34,8 @@
 #pragma once
 #include <functional>
 #include "ArduinoInterface.h"
-#include "phaseAnalyser.h"
 
-// Number of read retries performed per disk phase check
-#define RETRYS_PER_PHASE     5
+
 
 namespace ArduinoFloppyReader {
 
@@ -44,6 +44,7 @@ namespace ArduinoFloppyReader {
 								wrContinue,				// Continue working as normal
 								wrAbort,				// Abort thr process and stop
 								wrSkipBadChecksums,		// Request that the process ignores bad checksums (not recommended unless the retryCounter gets beyond RETRYS_PER_PHASE*16)
+								wrRetry                 // Retry!
 							};
 
 	enum ADFResult {
@@ -52,6 +53,7 @@ namespace ArduinoFloppyReader {
 						adfrFileError,					// Error opening the file to write to
 						adfrFileIOError,				// Error writing to the ADF file
 						adfrCompletedWithErrors,		// Completed but with sector errors
+						adfrDiskWriteProtected,         // Disk is write protected!
 						adfrDriveError					// Something wrong with reading the disk
 					};
 
@@ -68,9 +70,6 @@ namespace ArduinoFloppyReader {
 		// The Arduino device
 		ArduinoInterface m_device;
 
-		// Phase corrector library
-		PhaseAnalyser m_phase;
-
 	public: 
 		// Open the device we want to use.  Returns TRUE if it worked
 		bool openDevice(const unsigned int comPort);
@@ -78,13 +77,12 @@ namespace ArduinoFloppyReader {
 		// Close the device when we've finished
 		void closeDevice();
 
-		// Analyse phases, this is optional but massivly improves reading speed.  The callback provides progres between 0 and 100%.  Returning FALSE stops the process
-		AnalysisResult analyseDisk(std::function<bool(int progress)> callback);
-
 		// Reads the disk and write the data to the ADF file supplied.  The callback is for progress, and you can returns FALSE to abort the process
-		// It is HIGHLY recommended to use analyseDisk() first
 		// numTracks is the number of tracks to read.  Usually 80 (0..79), sometimes track 80 and 81 are needed
-		ADFResult writeADF(const std::wstring outputFile, const unsigned int numTracks, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound)> callback);
+		ADFResult DiskToADF(const std::wstring outputFile, const unsigned int numTracks, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound)> callback);
+
+		// Writes an ADF file back to a floppy disk.  Return FALSE in the callback to abort this operation.  If verify is set then the track isread back and and sector checksums are checked for 11 valid sectors
+		ADFResult ADFToDisk(const std::wstring inputFile, bool verify, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError) > callback);
 	};
 
 

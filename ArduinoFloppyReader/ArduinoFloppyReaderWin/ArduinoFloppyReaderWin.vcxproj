@@ -95,6 +95,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
+      <AdditionalDependencies>Winmm.lib</AdditionalDependencies>
     </Link>
     <Midl>
       <MkTypLibCompatible>false</MkTypLibCompatible>
@@ -143,6 +144,7 @@
       <SubSystem>Windows</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalDependencies>Winmm.lib</AdditionalDependencies>
     </Link>
     <Midl>
       <MkTypLibCompatible>false</MkTypLibCompatible>
@@ -187,7 +189,6 @@
   <ItemGroup>
     <ClInclude Include="..\lib\ADFWriter.h" />
     <ClInclude Include="..\lib\ArduinoInterface.h" />
-    <ClInclude Include="..\lib\phaseAnalyser.h" />
     <ClInclude Include="ArduinoFloppyReaderWin.h" />
     <ClInclude Include="ArduinoFloppyReaderWinDlg.h" />
     <ClInclude Include="Resource.h" />
@@ -197,7 +198,6 @@
   <ItemGroup>
     <ClCompile Include="..\lib\ADFWriter.cpp" />
     <ClCompile Include="..\lib\ArduinoInterface.cpp" />
-    <ClCompile Include="..\lib\phaseAnalyser.cpp" />
     <ClCompile Include="ArduinoFloppyReaderWin.cpp" />
     <ClCompile Include="ArduinoFloppyReaderWinDlg.cpp" />
     <ClCompile Include="stdafx.cpp">
@@ -219,7 +219,9 @@
     <Image Include="..\..\..\..\Websites\amiga\images\floppy.png" />
     <Image Include="res\ArduinoFloppyReaderWin.ico" />
     <Image Include="res\fin.bmp" />
+    <Image Include="res\fin2.bmp" />
     <Image Include="res\finpartial.bmp" />
+    <Image Include="res\finpartial2.bmp" />
     <Image Include="res\floppy.bmp" />
   </ItemGroup>
   <ItemGroup>

@@ -1,4 +1,4 @@
-/* ArduinoFloppyReader
+/* ArduinoFloppyReader (and writer)
 *
 * Copyright (C) 2017 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk

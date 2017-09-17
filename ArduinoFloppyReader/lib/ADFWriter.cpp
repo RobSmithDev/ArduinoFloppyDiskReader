@@ -1,4 +1,4 @@
-/* ArduinoFloppyReader
+/* ArduinoFloppyReader (and writer)
 *
 * Copyright (C) 2017 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk
@@ -24,6 +24,8 @@
 // Purpose:
 // This class reads the raw data from the device and attemps to check for errors.
 // Once all errors have been corrected the class will save the tracks to disk as an ADF file
+//
+// The class also handles writing an ADF file back to disk and optionally verifying the write.
 // 
 // The MFM decoding algorithm and information regarding finding the start of a sector
 // were taken from the excellent documentation by Laurent Clévy at http://lclevy.free.fr/adflib/adf_info.html
@@ -32,20 +34,34 @@
 #include "stdafx.h"
 #include <windows.h>
 #include <vector>
+#include <algorithm>
 #include "ADFWriter.h"
-#include "phaseAnalyser.h"
 #include "ArduinoInterface.h"
-
+#include <assert.h>
 
 using namespace ArduinoFloppyReader;
 
 
-#define MFM_MASK    0x55555555		
-#define AMIGA_WORD_SYNC  0x4489         // Disk SYNC code for the Amiga start of sector
-#define TRACK_SIZE (56+512+512)			// Size of a sector, NOT including the sector sync word longs
+#define MFM_MASK    0x55555555L		
+#define AMIGA_WORD_SYNC  0x4489							 // Disk SYNC code for the Amiga start of sector
+#define SECTOR_BYTES	512								 // Number of bytes in a decoded sector
+#define NUM_SECTORS_PER_TRACK 11						 // Number of sectors per track
+#define RAW_SECTOR_SIZE (8+56+SECTOR_BYTES+SECTOR_BYTES)      // Size of a sector, *Including* the sector sync word longs
+#define ADF_TRACK_SIZE (SECTOR_BYTES*NUM_SECTORS_PER_TRACK)   // Bytes required for a single track
+#define TRACK_FILLER_SIZE 256                                 // Theriticallt this would be 532 bytes, but if the disk spins slower or fast this would be wrong
 
 // Buffer to hold raw data for just a single sector
-typedef unsigned char RawSector[TRACK_SIZE];
+typedef unsigned char RawEncodedSector[RAW_SECTOR_SIZE];
+typedef unsigned char RawDecodedSector[SECTOR_BYTES];
+typedef RawDecodedSector RawDecodedTrack[NUM_SECTORS_PER_TRACK];
+typedef unsigned char RawMFMData[SECTOR_BYTES + SECTOR_BYTES];
+typedef struct alignas(8) {
+	unsigned char filler1[8];  // generally the Amiga can't see these if we write from the index
+	// Raw sector data
+	RawEncodedSector sectors[NUM_SECTORS_PER_TRACK];
+	// Blank "Filler" gap content. (this may get overwritten by the sectors a little)
+	unsigned char filler2[TRACK_FILLER_SIZE];
+} FullDiskTrack;
 
 // Structure to hold data while we decode it
 typedef struct alignas(8)  {
@@ -60,9 +76,11 @@ typedef struct alignas(8)  {
 	DWORD dataChecksum;			      // Read from the header, data checksum
 
 	DWORD headerChecksumCalculated;   // The header checksum we calculate
-	DWORD dataCheckdumCalculated;     // The data checksum we calculate
+	DWORD dataChecksumCalculated;     // The data checksum we calculate
 
-	unsigned char data[512];          // decoded sector data
+	RawDecodedSector data;          // decoded sector data
+
+	RawMFMData rawSector;   // raw track data, for analysis of invalid sectors
 } DecodedSector;
 
 // To hold a list of valid and checksum failed sectors
@@ -70,7 +88,8 @@ struct DecodedTrack {
 	// A list of valid sectors where the checksums are OK
 	std::vector<DecodedSector> validSectors;
 	// A list of sectors found with invalid checksums.  These are used if ignore errors is triggered
-	std::vector<DecodedSector> invalidSectors;
+	// We keep copies of each one so we can perform a statistical analysis to see if we can get a working one based on which bits are mostly set the same
+	std::vector<DecodedSector> invalidSectors[NUM_SECTORS_PER_TRACK];
 };
 
 
@@ -95,13 +114,46 @@ unsigned long decodeMFMdata(const unsigned long* input, unsigned long* output, c
 		input++;      /* next 'odd' long and 'even bits' long  */
 		output++;     /* next location of the future decoded long */
 	}
-	return chksum &= MFM_MASK;
+	return chksum & MFM_MASK;
+}
+
+// MFM encoding algorithm part 1 - this just writes the actual data bits in the right places
+// *input;	RAW data buffer (size == data_size) 
+// *output;	MFM encoded buffer (size == data_size*2) 
+// Returns the checksum calculated over the data
+unsigned long encodeMFMdataPart1(const unsigned long* input, unsigned long* output, const unsigned int data_size) {
+	unsigned long chksum = 0L;
+	unsigned int count;
+
+	unsigned long* outputOdd = output;
+	unsigned long* outputEven = (unsigned long*)(((unsigned char*)output) + data_size);
+
+	// Encode over two passes.  First split out the odd and even data, then encode the MFM values, the /4 is because we're working in longs, not bytes
+	for (count = 0; count < data_size / 4; count++) {
+		*outputEven = *input & MFM_MASK;
+		*outputOdd = ((*input)>>1) & MFM_MASK;
+		outputEven++;
+		outputOdd++;
+		input++;
+	}
+	
+	// Checksum calculator
+	// Encode over two passes.  First split out the odd and even data, then encode the MFM values, the /4 is because we're working in longs, not bytes
+	for (count = 0; count < (data_size / 4) * 2; count++) {
+		chksum ^= *output;
+		output++;
+	}
+
+	return chksum & MFM_MASK;
 }
 
 // Copys the data from inTrack into outTrack but fixes the bit/byte alignment so its aligned on the start of a byte 
-void alignSectorToByte(const RawTrackData& inTrack, int byteStart, int bitStart, RawSector& outSector) {
+void alignSectorToByte(const RawTrackData& inTrack, int byteStart, int bitStart, RawEncodedSector& outSector) {
 	unsigned char byteOut = 0;
 	unsigned int byteOutPosition = 0;
+
+	// Bit counter output
+	unsigned int counter = 0;
 
 	// The position supplied is the last bit of the track sync.  
 	bitStart--;   // goto the next bit
@@ -110,9 +162,7 @@ void alignSectorToByte(const RawTrackData& inTrack, int byteStart, int bitStart,
 		bitStart = 7;
 		byteStart++;
 	}
-
-	// Bit counter output
-	unsigned int counter = 0;
+	byteStart -= 8;   // wind back 8 bytes
 
 	// This is mis-aligned.  So we need to shift the data into byte boundarys
 	for (;;) {
@@ -123,7 +173,7 @@ void alignSectorToByte(const RawTrackData& inTrack, int byteStart, int bitStart,
 			if (++counter >= 8) {
 				outSector[byteOutPosition] = byteOut;
 				byteOutPosition++;
-				if (byteOutPosition >= TRACK_SIZE) return;
+				if (byteOutPosition >= RAW_SECTOR_SIZE) return;
 				counter = 0;
 			}
 		}
@@ -139,7 +189,7 @@ bool repairMFMData(unsigned char* data, const unsigned int dataLength) {
 	bool errors = false;
 	// Only certain bit-patterns are allowed.  So if we come across an invalid one we will try to repair it.  
 	// You cannot have two '1's together, and a max of three '0' in a row
-	// Allowed combinations:  (note the SYNC WORDS and TRACK START are designed to break these rules, but we should encounter them)
+	// Allowed combinations:  (note the SYNC WORDS and TRACK START are designed to break these rules, but we shouldn't encounter them)
 	// 
 	//	00010
 	//	00100
@@ -152,11 +202,11 @@ bool repairMFMData(unsigned char* data, const unsigned int dataLength) {
 	//	10100
 	//	10101
 	//
-
 	unsigned char testByte = 0;
 	int counter = 0;
 	for (unsigned int position = 0; position < dataLength; position++) {
-		for (unsigned char bitIndex = 0; bitIndex < 8; bitIndex++) {
+		// Fixed: This was the wrong way around
+		for (int bitIndex = 7; bitIndex >= 0; bitIndex--) {
 			testByte <<= 1;   // shift off one bit to make room for the new bit
 			if (*data & (1 << bitIndex)) {
 				// Make sure two '1's dont come in together as this is not allowed! This filters out a lot of BAD combinations
@@ -164,11 +214,12 @@ bool repairMFMData(unsigned char* data, const unsigned int dataLength) {
 					testByte |= 1;
 				} 
 				else {
+					// We detected two '1's in a row, which isnt allowed.  From reading this most likely means this was a weak bit, so we change it to zero.
 					errors = true;
 				}
-			}
+			} 
 
-			// We're only interested in the last so bany bits, and only when we have received that many
+			// We're only interested in the last so many bits, and only when we have received that many
 			if (++counter > 4) {
 				switch (testByte & 0x1F) {
 					// These are the only possible invalid combinations left
@@ -180,57 +231,86 @@ bool repairMFMData(unsigned char* data, const unsigned int dataLength) {
 					break;
 				}
 			}
-
-
 		}
+		data++;
 	}
 
 	return errors;
 	 
 }
 
+// Looks at the history for this sector number and creates a new sector where the bits are set to whatever occurs more.  We then do a checksum and if it succeeds we use it
+bool attemptFixSector(const DecodedTrack& decodedTrack, DecodedSector& outputSector) {
+	int sectorNumber = outputSector.sectorNumber;
 
-// Extract and convert the sector.  This may be a duplicate so we may reject it
-void decodeSector(const RawSector& rawSector, const unsigned int trackNumber, const DiskSurface surface, DecodedTrack& decodedTrack) {
+	if (decodedTrack.invalidSectors[sectorNumber].size() < 2) return false;
+
+	typedef struct {
+		int zeros = 0;
+		int ones = 0;
+	} SectorCounter[8];
+
+	SectorCounter sectorSum[SECTOR_BYTES + SECTOR_BYTES];
+
+	memset(sectorSum, 0, sizeof(sectorSum));
+
+	// Calculate the number of '1's and '0's in each block
+	for (const DecodedSector& sec : decodedTrack.invalidSectors[sectorNumber]) 
+		for (int byteNumber = 0; byteNumber < SECTOR_BYTES + SECTOR_BYTES; byteNumber++) 
+			for (int bit = 0; bit <= 7; bit++) 
+				if (sec.rawSector[byteNumber] & (1 << bit))
+					sectorSum[byteNumber][bit].ones++; else sectorSum[byteNumber][bit].zeros++;
+
+	// Now create a sector based on this data
+	memset(outputSector.rawSector, 0, sizeof(outputSector.rawSector));
+	for (int byteNumber = 0; byteNumber < SECTOR_BYTES + SECTOR_BYTES; byteNumber++)
+		for (int bit = 0; bit <= 7; bit++)
+			if (sectorSum[byteNumber][bit].ones >= sectorSum[byteNumber][bit].zeros)
+				outputSector.rawSector[byteNumber] |= (1 << bit);
+
+	return true;
+}
+
+// Extract and convert the sector.  This may be a duplicate so we may reject it.  Returns TRUE if it was valid, or false if not
+bool decodeSector(const RawEncodedSector& rawSector, const unsigned int trackNumber, const DiskSurface surface, DecodedTrack& decodedTrack, bool ignoreHeaderChecksum, int& lastSectorNumber) {
 	DecodedSector sector;
+
+	lastSectorNumber = -1;
+	memcpy(sector.rawSector, rawSector, sizeof(RawMFMData));
 
 	// Easier to operate on
 	unsigned char* sectorData = (unsigned char*)rawSector;
 
-	// Try to repair any errors on old disks
-	if (repairMFMData(sectorData, TRACK_SIZE)) {
-		OutputDebugString(L"MFM Errors Detected\n");
-	}
-
 	// Read the first 4 bytes (8).  This  is the track header data	
-	sector.headerChecksumCalculated = decodeMFMdata((unsigned long*)sectorData, (unsigned long*)&sector, 4);
+	sector.headerChecksumCalculated = decodeMFMdata((unsigned long*)(sectorData + 8), (unsigned long*)&sector, 4);
 	// Decode the label data and update the checksum
-	sector.headerChecksumCalculated ^= decodeMFMdata((unsigned long*)(sectorData + 8), (unsigned long*)&sector.sectorLabel[0], 16);
+	sector.headerChecksumCalculated ^= decodeMFMdata((unsigned long*)(sectorData + 16), (unsigned long*)&sector.sectorLabel[0], 16);
 	// Get the checksum for the header
-	decodeMFMdata((unsigned long*)(sectorData + 40), (unsigned long*)&sector.headerChecksum, 4);  // (computed on mfm longs, longs between offsets 8 and 44 == 2 * (1 + 4) longs)
+	decodeMFMdata((unsigned long*)(sectorData + 48), (unsigned long*)&sector.headerChecksum, 4);  // (computed on mfm longs, longs between offsets 8 and 44 == 2 * (1 + 4) longs)
 	// If the header checksum fails we just cant trust anything we received, so we just drop it
-	if (sector.headerChecksum != sector.headerChecksumCalculated) {
-		return;
+	if ((sector.headerChecksum != sector.headerChecksumCalculated) && (!ignoreHeaderChecksum)) {
+		return false;
 	}
 
 	// Check if the header contains valid fields
 	if (sector.trackFormat != 0xFF) 
-		return;  // not valid
+		return false;  // not valid
 	if (sector.sectorNumber > 10) 
-		return;
+		return false;
 	if (sector.trackNumber > 162) 
-		return;   // 81 tracks * 2 for both sides
-	if (sector.sectorsRemaining > 11) 
-		return;  // this isnt possible either
+		return false;   // 81 tracks * 2 for both sides
+	if (sector.sectorsRemaining > 11)
+		return false;  // this isnt possible either
+	if (sector.sectorsRemaining < 1)
+		return false;  // or this
 
 	// And is it from the track we expected?
 	const unsigned char targetTrackNumber = (trackNumber << 1) | ((surface == DiskSurface::dsUpper) ? 1 : 0);
 
-	if (sector.trackNumber != targetTrackNumber) return; // this'd be weird
+	if (sector.trackNumber != targetTrackNumber) return false; // this'd be weird
 
 	// Get the checksum for the data
-	decodeMFMdata((unsigned long*)(sectorData + 48), (unsigned long*)&sector.dataChecksum, 4);
-
+	decodeMFMdata((unsigned long*)(sectorData + 56), (unsigned long*)&sector.dataChecksum, 4);
 	
 
 	// Lets see if we already have this one
@@ -240,34 +320,98 @@ void decodeSector(const RawSector& rawSector, const unsigned int trackNumber, co
 	});
 
 	// We already have it as a GOOD VALID sector, so skip, we don't need it.
-	if (index != decodedTrack.validSectors.end()) return;
+	if (index != decodedTrack.validSectors.end()) return true;
 
 	// Decode the data and receive it's checksum
-	sector.dataCheckdumCalculated = decodeMFMdata((unsigned long*)(sectorData + 56), (unsigned long*)&sector.data[0], 512); // (from 64 to 1088 == 2*512 bytes)
-	
-	// See if this already exists in our invalid sectors list
-	index = std::find_if(decodedTrack.invalidSectors.begin(), decodedTrack.invalidSectors.end(), [searchSector](const DecodedSector& sector) -> bool {
-		return (sector.sectorNumber == searchSector);
-	});
+	sector.dataChecksumCalculated = decodeMFMdata((unsigned long*)(sectorData + 64), (unsigned long*)&sector.data[0], SECTOR_BYTES); // (from 64 to 1088 == 2*512 bytes)
 
 	// Is the data valid?
-	if (sector.dataChecksum != sector.dataCheckdumCalculated) {
-		// If we havent got this one as a bad one, so we'll keep a copy of it
-		if (index == decodedTrack.invalidSectors.end()) decodedTrack.invalidSectors.push_back(sector);
+	if (sector.dataChecksum != sector.dataChecksumCalculated) {
+		// Keep a copy
+		decodedTrack.invalidSectors[sector.sectorNumber].push_back(sector);
+		return false;
 	}
 	else {
 		// Its a good sector, and we dont have it yet
 		decodedTrack.validSectors.push_back(sector);
 
 		// Lets delete it from invalid sectors list
-		if (index != decodedTrack.invalidSectors.end()) decodedTrack.invalidSectors.erase(index);
+		decodedTrack.invalidSectors[sector.sectorNumber].clear();
+
+		return true;
 	}
 }
 
+
+#define BYTE_TO_BINARY_PATTERN "%c%c%c%c%c%c%c%c"
+#define BYTE_TO_BINARY(byte)  \
+  (byte & 0x80 ? '1' : '0'), \
+  (byte & 0x40 ? '1' : '0'), \
+  (byte & 0x20 ? '1' : '0'), \
+  (byte & 0x10 ? '1' : '0'), \
+  (byte & 0x08 ? '1' : '0'), \
+  (byte & 0x04 ? '1' : '0'), \
+  (byte & 0x02 ? '1' : '0'), \
+  (byte & 0x01 ? '1' : '0') 
+
+
+// Encode a sector into the correct format for disk
+void encodeSector(const unsigned int trackNumber, const DiskSurface surface, const unsigned int sectorNumber, const RawDecodedSector& input, RawEncodedSector& encodedSector) {
+	// Sector Start
+	encodedSector[0] = 0xAA;
+	encodedSector[1] = 0xAA;
+	encodedSector[2] = 0xAA;
+	encodedSector[3] = 0xAA;
+	// Sector Sync
+	encodedSector[4] = 0x44;
+	encodedSector[5] = 0x89;
+	encodedSector[6] = 0x44;
+	encodedSector[7] = 0x89;
+
+	// MFM Encoded header
+	DecodedSector header;
+	memset(&header, 0, sizeof(header));
+
+	header.trackFormat = 0xFF;
+	header.trackNumber = (trackNumber << 1) | ((surface == DiskSurface::dsUpper) ? 1 : 0);
+	header.sectorNumber = sectorNumber; 
+	header.sectorsRemaining = NUM_SECTORS_PER_TRACK - sectorNumber;  //1..11
+	
+	
+	header.headerChecksumCalculated = encodeMFMdataPart1((const unsigned long*)&header, (unsigned long*)&encodedSector[8], 4);
+	// Then theres the 16 bytes of the volume label that isnt used anyway
+	header.headerChecksumCalculated ^= encodeMFMdataPart1((const unsigned long*)&header.sectorLabel, (unsigned long*)&encodedSector[16], 16);
+	// Thats 40 bytes written as everything doubles (8+4+4+16+16). - Encode the header checksum
+	encodeMFMdataPart1((const unsigned long*)&header.headerChecksumCalculated, (unsigned long*)&encodedSector[48], 4);
+	// And move on to the data section.  Next should be the checksum, but we cant encode that until we actually know its value!
+	header.dataChecksumCalculated = encodeMFMdataPart1((const unsigned long*)&input, (unsigned long*)&encodedSector[64], SECTOR_BYTES);
+	// And add the checksum
+	encodeMFMdataPart1( (const unsigned long*)&header.dataChecksumCalculated, (unsigned long*)&encodedSector[56], 4);
+
+	// Now fill in the MFM clock bits
+	bool lastBit = encodedSector[7] & (1 << 0);
+	bool thisBit = lastBit;
+
+	// Clock bits are bits 7, 5, 3 and 1
+	// Data is 6, 4, 2, 0
+	for (int count = 8; count < RAW_SECTOR_SIZE; count++) {
+		for (int bit = 7; bit >= 1; bit -= 2) {
+			lastBit = thisBit;			
+			thisBit = encodedSector[count] & (1 << (bit-1));
+	
+			if (!(lastBit | thisBit)) {
+				// Encode a 1!
+				encodedSector[count] |= (1 << bit);
+			}
+		}
+	}	
+}
+
 // Find sectors within raw data read from the drive by searching bit-by-bit for the SYNC bytes
-void findSectors(const RawTrackData& track, unsigned int trackNumber, DiskSurface side, WORD trackSync, DecodedTrack& decodedTrack) {
+void findSectors(const RawTrackData& track, unsigned int trackNumber, DiskSurface side, WORD trackSync, DecodedTrack& decodedTrack, bool ignoreHeaderChecksum) {
 	// Work out what we need to search for which is 2AAAAAAAsyncsync
 	//const unsigned long long search = (trackSync | (((DWORD)trackSync) << 16)) | (((long long)0x2AAAAAAA) << 32);
+	// For speed and to ignore some data errors, we now just search for syncsync and ignore the 2AAAAAAA part
 
 	// Work out what we need to search for which is syncsync
 	const unsigned long search = (trackSync | (((DWORD)trackSync) << 16));
@@ -278,6 +422,8 @@ void findSectors(const RawTrackData& track, unsigned int trackNumber, DiskSurfac
 	// Keep runnign until we run out of data
 	unsigned int byteIndex = 0;
 
+	int nextTrackBitCount = 0;
+
 	// run the entire track length
 	while (byteIndex<RAW_TRACKDATA_LENGTH) {
 
@@ -286,18 +432,41 @@ void findSectors(const RawTrackData& track, unsigned int trackNumber, DiskSurfac
 			decoded <<= 1;   // shift off one bit to make room for the new bit
 			if (track[byteIndex] & (1 << bitIndex)) decoded |= 1;
 
-			// Have we matched the sync words and the start words? - Early Amiga had a bug with the 0xAAAAAAAA sync pattern
-			if ((decoded ) == search) {
-				RawSector alignedSector;
-				// We extract ALL of the track data from this BIT to byte align it properly, then pass it onto the code to read the sector
+			// Have we matched the sync words correctly
+			++nextTrackBitCount;
+			int lastSectorNumber = -1;
+			if (( decoded == search) || ((nextTrackBitCount >=63) && (nextTrackBitCount <= 65))) {
+				RawEncodedSector alignedSector;
+				
+				// We extract ALL of the track data from this BIT to byte align it properly, then pass it onto the code to read the sector (from the start of the sync code)
 				alignSectorToByte(track, byteIndex, bitIndex, alignedSector);
+				
+				// Now see if there's a valid sector there.  We now only skip the sector if its valid, incase rogue data gets in there
+				if (decodeSector(alignedSector, trackNumber, side, decodedTrack, ignoreHeaderChecksum, lastSectorNumber)) {
+					// We know the size of this buffer, so we can skip by exactly this amount
+					byteIndex += RAW_SECTOR_SIZE - 8; // skip this many bytes as we know this is part of the track! minus 8 for the SYNC
+					if (byteIndex >= RAW_TRACKDATA_LENGTH) break; 
+					// We know that 8 bytes from here should be another track. - we allow 1 bit either way for slippage, but this allows an extra check incase the SYNC pattern is damaged
+					nextTrackBitCount = 0;
+				}
+				else {
 
-				// Now see if there's a valid sector there				
-				decodeSector(alignedSector, trackNumber, side, decodedTrack);
-
-				// We know the size of this buffer, so we can skip by exactly this amount
-				byteIndex += TRACK_SIZE; // skip this many bytes as we know this is part of the track!
-				if (byteIndex >= RAW_TRACKDATA_LENGTH) break;
+					// Decode failed.  Lets try a "homemade" one
+					DecodedSector newTrack;
+					if ((lastSectorNumber>=0) && (lastSectorNumber<NUM_SECTORS_PER_TRACK)) {
+						newTrack.sectorNumber = lastSectorNumber;
+						if (attemptFixSector(decodedTrack, newTrack)) {
+							memcpy(newTrack.rawSector, alignedSector, sizeof(newTrack.rawSector));
+							// See if our makeshift data will decode or not
+							if (decodeSector(alignedSector, trackNumber, side, decodedTrack, ignoreHeaderChecksum, lastSectorNumber)) {
+								// We know the size of this buffer, so we can skip by exactly this amount
+								byteIndex += RAW_SECTOR_SIZE - 8; // skip this many bytes as we know this is part of the track! minus 8 for the SYNC
+								if (byteIndex >= RAW_TRACKDATA_LENGTH) break;
+							}
+						}
+					}
+					if (decoded == search) nextTrackBitCount = 0;					
+				}
 			}
 		}
 		byteIndex++;
@@ -306,20 +475,21 @@ void findSectors(const RawTrackData& track, unsigned int trackNumber, DiskSurfac
 
 // Merges any invalid sectors into the valid ones as a last resort
 void mergeInvalidSectors(DecodedTrack& track) {
-	// So the invalid sectors list do not overlap with the valid ones, so we can just add them on the end
-	for (const DecodedSector& sector : track.invalidSectors)
-		track.validSectors.push_back(sector);
+	for (unsigned char sector = 0; sector < NUM_SECTORS_PER_TRACK; sector++) {
+		if (track.invalidSectors[sector].size()) {
+			// Lets try to make the best sector we can
+			DecodedSector sec = track.invalidSectors[sector][0];
+			// Repair maybe!?
+			attemptFixSector(track, sec);
 
-	// Clear the list
-	track.invalidSectors.clear();
+			track.validSectors.push_back(sec);
+		}
+		track.invalidSectors[sector].clear();
+	}
 }
-
-
-
 
 // Open the device we want to use.  Returns TRUE if it worked
 bool ADFWriter::openDevice(const unsigned int comPort) {
-	m_phase.reset();
 	if (m_device.openPort(comPort) != InterfaceResult::irOK) return false;
 	Sleep(100);
 	return m_device.enableReading(true, true)==InterfaceResult::irOK;
@@ -330,79 +500,148 @@ void ADFWriter::closeDevice() {
 	m_device.closePort();
 }
 
-// Analyse phases, this is optional but massivly improves reading speed.  The callback provides progres between 0 and 100%.  Returning FALSE stops the process
-AnalysisResult ADFWriter::analyseDisk(std::function<bool(int progress)> callback) {
-	if (!m_device.isOpen()) return AnalysisResult::arDriveError;
 
-	// Reset the phase monitor system
-	m_phase.reset();
+
+// Writes an ADF file back to a floppy disk.  Return FALSE in the callback to abort this operation 
+ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool verify, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError) > callback) {
+	if (!m_device.isOpen()) return ADFResult::adfrDriveError;
+
+	// Upgrade to writing mode
+	switch (m_device.enableWriting(true, true)) {
+		case InterfaceResult::irCommError: return ADFResult::adfrDriveError;
+		case InterfaceResult::irError: return ADFResult::adfrDiskWriteProtected;
+	}
+
+	// Attempt to open the file
+	HANDLE hADFFile = CreateFile(inputFile.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0);
+	if (hADFFile == INVALID_HANDLE_VALUE) return ADFResult::adfrFileError;
 
 	unsigned int currentTrack = 0;
-	// We try reading track 0 with each phase and then sort by which gave us the best results
-	if (m_device.selectTrack(currentTrack) != InterfaceResult::irOK) return AnalysisResult::arDriveError;
+	unsigned int surfaceIndex = 0;
 
-	// To hold a raw track
-	RawTrackData data;
-	DecodedTrack track;
-	int sectorsFound = 0;
+	// Buffer to hold the track
+	RawDecodedTrack track;
+	FullDiskTrack disktrack;
+	memset(disktrack.filler1, 0xAA, sizeof(disktrack.filler1));  // Pad with "0"s which as an MFM encoded byte is 0xAA
+	memset(disktrack.filler2, 0xAA, sizeof(disktrack.filler2));  // Pad with "0"s which as an MFM encoded byte is 0xAA
 
-	// Calc all phases
-	for (int phaseIndex = 0; phaseIndex < NUMBER_OF_PHASES; phaseIndex++) {
+	// Just make sure nothing weird is going on
+	assert(sizeof(track) == ADF_TRACK_SIZE);
+	bool errors = false;
 
-		unsigned int counter = 0;
-		const char currentPhase = m_phase.getPhaseAtIndex(phaseIndex);
+	DWORD bytesRead;
+	while (ReadFile(hADFFile, &track, ADF_TRACK_SIZE, &bytesRead, nullptr)) {
+		// Stop if we didnt read a full track
+		if (bytesRead != ADF_TRACK_SIZE) break;
 
-		// For one track, on both sides
-		for (int surfaceIndex = 0; surfaceIndex < 2; surfaceIndex++) {
-			const DiskSurface surface = (surfaceIndex == 1) ? DiskSurface::dsUpper : DiskSurface::dsLower;
-
-			if (callback)
-				if (!callback((((phaseIndex << 1) | surfaceIndex) * 100) / (NUMBER_OF_PHASES * 2))) return AnalysisResult::arAborted;
-
-			// Switch surface
-			if (!m_device.selectSurface(surface)) return AnalysisResult::arDriveError;
-
-			track.invalidSectors.clear();
-			track.validSectors.clear();
-
-			// Read from the disk and search for sectors
-			if (m_device.readCurrentTrack(currentPhase, data)) {
-				if (m_device.trackContainsData(data)) {
-					findSectors(data, 0, surface, AMIGA_WORD_SYNC, track);
-					sectorsFound += track.validSectors.size();
-				}
-				else {
-					// We'll skip to the next track and try again
-					if (surfaceIndex == 0) {
-						phaseIndex = -1;
-						surfaceIndex = 2;
-						counter = 0;
-						currentTrack++;
-						if (currentTrack > 79) return AnalysisResult::arFailed;
-						if (m_device.selectTrack(currentTrack) != InterfaceResult::irOK) return AnalysisResult::arDriveError;
-						break;
-					}
-				}
-			} 
-			else {
-				// Something went wrong
-				return AnalysisResult::arDriveError;
-			}
-
-			// Count only valid sectord
-			counter += track.validSectors.size();
+		// Select the track we're working on
+		if (m_device.selectTrack(currentTrack)!= InterfaceResult::irOK) {
+			CloseHandle(hADFFile);
+			return ADFResult::adfrDriveError;
 		}
 
-		// Keep score
-		m_phase.submitStatistics(currentPhase, counter);
+		DiskSurface surface = (surfaceIndex == 1) ? DiskSurface::dsUpper : DiskSurface::dsLower;
+		// Change the surface we're targeting
+		if (m_device.selectSurface(surface) != InterfaceResult::irOK) {
+			CloseHandle(hADFFile);
+			return ADFResult::adfrDriveError;
+		}
+
+		// Handle callback
+		if (callback)
+			if (callback(currentTrack, surface, false) == wrAbort) {
+				CloseHandle(hADFFile);
+				return ADFResult::adfrAborted;
+			}
+
+		// Now encode the sector into the output buffer
+		for (unsigned int sector = 0; sector < NUM_SECTORS_PER_TRACK; sector++)
+			encodeSector(currentTrack, surface, sector, track[sector], disktrack.sectors[sector]);
+
+		// Keep looping until it wrote correctly
+		DecodedTrack trackRead;
+		trackRead.validSectors.clear();
+		for (unsigned int a = 0; a < NUM_SECTORS_PER_TRACK; a++) trackRead.invalidSectors[a].clear();
+
+		int failCount = 0;
+		while ((verify) && (trackRead.validSectors.size()<NUM_SECTORS_PER_TRACK)) {
+			switch (m_device.writeCurrentTrack((const unsigned char*)(&disktrack), sizeof(disktrack), false)) {
+			case InterfaceResult::irError: CloseHandle(hADFFile);
+				return ADFResult::adfrDiskWriteProtected;
+			case InterfaceResult::irCommError: CloseHandle(hADFFile);
+				return ADFResult::adfrDriveError;
+			}
+
+			if (verify) {				
+				for (int retries=0; retries<5; retries++) {
+					RawTrackData data;
+					// Read the track back
+					if (m_device.readCurrentTrack(data, false) == InterfaceResult::irOK) {								
+						// Find hopefully all sectors
+						findSectors(data, currentTrack, surface, AMIGA_WORD_SYNC, trackRead, false);
+					}
+					if (trackRead.validSectors.size() == NUM_SECTORS_PER_TRACK) break;
+				} 
+
+				// So we found all 11 sectors, but were they the ones we actually wrote!?
+				if (trackRead.validSectors.size() == NUM_SECTORS_PER_TRACK) {
+					int sectorsGood = 0;
+					for (int sector = 0; sector < NUM_SECTORS_PER_TRACK; sector++) {
+						auto index = std::find_if(trackRead.validSectors.begin(), trackRead.validSectors.end(), [sector](const DecodedSector& sectorfound) -> bool {
+							return (sectorfound.sectorNumber == sector);
+						});
+
+						// We found this sector.
+						if (index != trackRead.validSectors.end()) {
+							DecodedSector& rec = trackRead.validSectors[index - trackRead.validSectors.begin()];
+							if (memcmp(rec.data, track[sector], SECTOR_BYTES) == 0) {
+								sectorsGood++;  // this one matches on read!
+							}
+						}
+					}
+					if (sectorsGood != NUM_SECTORS_PER_TRACK) {
+						// Something went wrong, so we clear them all so it gets reported as an error
+						trackRead.validSectors.clear();
+					}
+				}
+
+
+				// We failed to verify this track.
+				if (trackRead.validSectors.size() < NUM_SECTORS_PER_TRACK) {
+					failCount++;
+					if (failCount >= 5) {
+						if (!callback) break;
+						bool breakOut = false;
+
+						switch (callback(currentTrack, surface, true)) {
+						case wrAbort: CloseHandle(hADFFile);
+							return ADFResult::adfrAborted;
+						case wrSkipBadChecksums: breakOut = true; errors = true; break;
+						case wrContinue: break;
+						}
+						if (breakOut) break;
+						failCount = 0;
+					}
+				}
+			}
+		}
+
+
+		// Goto the next surface/track
+		surfaceIndex++;
+		if (surfaceIndex > 1) {
+			surfaceIndex = 0;
+			currentTrack++;
+		}
+		// But there is a physical limit
+		if (currentTrack > 81) break; 
 	}
-	
-	return sectorsFound > 4 ? AnalysisResult::arComplete : AnalysisResult::arFailed;
+
+	return errors? ADFResult::adfrCompletedWithErrors: ADFResult::adfrComplete;
 }
 
 // Reads the disk and write the data to the ADF file supplied.  The callback is for progress, and you can returns FALSE to abort the process
-// It is HIGHLY recommended to use analyseDisk() first
-ADFResult ADFWriter::writeADF(const std::wstring outputFile, const unsigned int numTracks, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound)> callback) {
+ADFResult ADFWriter::DiskToADF(const std::wstring outputFile, const unsigned int numTracks, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound)> callback) {
 	if (!m_device.isOpen()) return ADFResult::adfrDriveError;
 
 	// Higher than this is not supported
@@ -421,7 +660,7 @@ ADFResult ADFWriter::writeADF(const std::wstring outputFile, const unsigned int 
 	for (unsigned int currentTrack = 0; currentTrack < numTracks; currentTrack++) {
 
 		// Select the track we're working on
-		if (!m_device.selectTrack(currentTrack)) {
+		if (m_device.selectTrack(currentTrack) != InterfaceResult::irOK) {
 			CloseHandle(hADFFile);
 			return ADFResult::adfrCompletedWithErrors;
 		}
@@ -432,87 +671,77 @@ ADFResult ADFWriter::writeADF(const std::wstring outputFile, const unsigned int 
 			const DiskSurface surface = (surfaceIndex == 1) ? DiskSurface::dsUpper : DiskSurface::dsLower;
 
 			// Change the surface we're looking at
-			if (!m_device.selectSurface(surface)) {
+			if (m_device.selectSurface(surface) != InterfaceResult::irOK) {
 				CloseHandle(hADFFile);
 				return ADFResult::adfrCompletedWithErrors;
 			}
 
 			// Reset the sectors list
-			track.invalidSectors.clear();
+			for (unsigned int sector=0; sector<NUM_SECTORS_PER_TRACK; sector++)
+				track.invalidSectors[sector].clear();
+
 			track.validSectors.clear();
 
-			int failCounter = 0;
-			int phaseIndex = 0;
-
-			// Optomise order based on history so far
-			m_phase.reflectOrder();
-
 			// Extract phase code
-			char currentPhase;
 			int failureTotal = 0;
 			bool ignoreChecksums = false;
 			unsigned int totalFails = 0;
 
 			// Repeat until we have all 11 sectors
-			while (track.validSectors.size() < 11) {
+			while (track.validSectors.size() < NUM_SECTORS_PER_TRACK) {
 
-				if (callback)
-					switch (callback(currentTrack, surface, failureTotal/8, track.validSectors.size(), track.invalidSectors.size())) {
-					case WriteResponse::wrContinue: break;  // do nothing
-					case WriteResponse::wrAbort:    CloseHandle(hADFFile);
-						return ADFResult::adfrAborted;
+				if (callback) {
+					int total = 0;
+					for (unsigned int sector = 0; sector < NUM_SECTORS_PER_TRACK; sector++)
+						if (track.invalidSectors[sector].size()) total++;
 
-					case WriteResponse::wrSkipBadChecksums: ignoreChecksums = true; failureTotal = 0; break;
+					switch (callback(currentTrack, surface, failureTotal, track.validSectors.size(), total)) {
+						case WriteResponse::wrContinue: break;  // do nothing
+						case WriteResponse::wrRetry:    failureTotal = 0; break;
+						case WriteResponse::wrAbort:    CloseHandle(hADFFile);
+														return ADFResult::adfrAborted;
+
+						case WriteResponse::wrSkipBadChecksums: 
+							if (ignoreChecksums) {
+								// Already been here, so we'll create blank sectors just to get this going
+								for (unsigned char sectornumber = 0; sectornumber <= 11; sectornumber++) {
+									auto index = std::find_if(track.validSectors.begin(), track.validSectors.end(), [sectornumber](const DecodedSector& sector) -> bool {
+										return (sector.sectorNumber == sectornumber);
+									});
+									// Not found. Lets add it
+									if (index == track.validSectors.end()) {
+										DecodedSector sector;
+										memset(&sector, 0, sizeof(sector));
+										sector.sectorNumber = sectornumber;
+										track.validSectors.push_back(sector);
+									}
+								}
+							}
+							ignoreChecksums = true;
+							failureTotal = 0;
+							break;
 					}
-
-				currentPhase = m_phase.getPhaseAtIndex(phaseIndex);
+				}
 
 				// Read and process
-				if (m_device.readCurrentTrack(currentPhase, data) == InterfaceResult::irOK) {
-					unsigned int sectorsBefore = track.validSectors.size();
-					findSectors(data, currentTrack, surface, AMIGA_WORD_SYNC, track);
-					sectorsBefore = track.validSectors.size() - sectorsBefore;
-					// Keep phase anayser ontop! - but we award based on total sectors so far!
-					if (sectorsBefore) m_phase.submitStatistics(currentPhase, track.validSectors.size());
+				if (m_device.readCurrentTrack(data, false) == InterfaceResult::irOK) {
+					findSectors(data, currentTrack, surface, AMIGA_WORD_SYNC, track, ignoreChecksums);
+					failureTotal++;
 				}
 				else {
 					CloseHandle(hADFFile);
 					return ADFResult::adfrDriveError;
 				}
-
-				// Every 5 fails, switch disk phase
-				failureTotal++;
-				if (failCounter++ > 5) {
-					// If we fail, we penalise the phase by what was found
-					m_phase.submitStatistics(currentPhase, track.validSectors.size());
-					phaseIndex = (phaseIndex + 1) % NUMBER_OF_PHASES;
-					failCounter = 0;
-
-					// Full phase cycle.
-					if (phaseIndex == 0) {
-						totalFails++;
-						// Failed three times? Ok, lets see hwta we can salvage
-						// We switch off the motor, and then switch it basck on, sometimes this jults the drive into getting something we missed
-						if (!m_device.enableReading(false, false)) {
-							CloseHandle(hADFFile);
-							m_device.enableReading(false);
-							return ADFResult::adfrDriveError;
+				
+				// If the user wants to skip invalid sectors and save them
+				if (ignoreChecksums) {
+					int total = 0;
+					for (unsigned int sector = 0; sector < NUM_SECTORS_PER_TRACK; sector++)
+						if (track.invalidSectors[sector].size()) {
+							includesBadSectors = true;
+							break;
 						}
-						// Wait for a period
-						Sleep(100);
-						// Turn it back on again
-						if (!m_device.enableReading(true, false)) {
-							CloseHandle(hADFFile);
-							m_device.enableReading(false);
-							return ADFResult::adfrDriveError;
-						}
-					}
-
-					// If the user wants to skip invalid sectors and save them
-					if ((ignoreChecksums) || (totalFails>2)) {
-						includesBadSectors |= track.invalidSectors.size() > 0;
-						mergeInvalidSectors(track);
-					}
+					mergeInvalidSectors(track);
 				}
 			}
 
@@ -535,3 +764,4 @@ ADFResult ADFWriter::writeADF(const std::wstring outputFile, const unsigned int 
 
 	return includesBadSectors ? ADFResult::adfrCompletedWithErrors : ADFResult::adfrComplete;
 }
+

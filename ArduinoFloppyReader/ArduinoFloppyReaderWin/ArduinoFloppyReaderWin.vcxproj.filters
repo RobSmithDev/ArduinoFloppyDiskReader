@@ -39,9 +39,6 @@
     <ClInclude Include="..\lib\ArduinoInterface.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\lib\phaseAnalyser.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ArduinoFloppyReaderWin.cpp">
@@ -57,9 +54,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\lib\ArduinoInterface.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="..\lib\phaseAnalyser.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -93,6 +87,12 @@
       <Filter>Resource Files</Filter>
     </Image>
     <Image Include="res\finpartial.bmp">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="res\fin2.bmp">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="res\finpartial2.bmp">
       <Filter>Resource Files</Filter>
     </Image>
   </ItemGroup>

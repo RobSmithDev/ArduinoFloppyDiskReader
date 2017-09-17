@@ -1,4 +1,4 @@
-/* ArduinoFloppyReader
+/* ArduinoFloppyReader (and writer)
 *
 * Copyright (C) 2017 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk
@@ -34,14 +34,16 @@
 using namespace ArduinoFloppyReader;
 
 // Command that the ARDUINO Sketch understands
-#define COMMAND_VERSION    '?'
-#define COMMAND_REWIND     '.'
-#define COMMAND_GOTOTRACK  '#'
-#define COMMAND_HEAD0      '['
-#define COMMAND_HEAD1      ']'
-#define COMMAND_READTRACK  '<'
-#define COMMAND_ENABLE     '+'
-#define COMMAND_DISABLE    '-'
+#define COMMAND_VERSION            '?'
+#define COMMAND_REWIND             '.'
+#define COMMAND_GOTOTRACK          '#'
+#define COMMAND_HEAD0              '['
+#define COMMAND_HEAD1              ']'
+#define COMMAND_READTRACK          '<'
+#define COMMAND_ENABLE             '+'
+#define COMMAND_DISABLE            '-'
+#define COMMAND_WRITETRACK         '>'
+#define COMMAND_ENABLEWRITE        '~'
 
 // Constructor for this class
 ArduinoInterface::ArduinoInterface() {
@@ -54,7 +56,7 @@ ArduinoInterface::~ArduinoInterface() {
 	closePort();
 }
 
-// Attempts to open the reader running on the COM port number provided.  Port MUST support 1M baud
+// Attempts to open the reader running on the COM port number provided.  Port MUST support 2M baud
 InterfaceResult ArduinoInterface::openPort(const unsigned int portNumber) {
 	closePort();
 
@@ -74,11 +76,11 @@ InterfaceResult ArduinoInterface::openPort(const unsigned int portNumber) {
 	GetCommConfig(m_comPort, &config, &comConfigSize);
 	config.dwSize = sizeof(config);
 	config.dcb.DCBlength = sizeof(config.dcb);
-	config.dcb.BaudRate = 1000000;  // 1M baudrate
+	config.dcb.BaudRate = 2000000;  // 2M baudrate
 	config.dcb.ByteSize = 8;        // 8-bit
 	config.dcb.fBinary = true;
 	config.dcb.Parity = false;
-	config.dcb.fOutxCtsFlow = false;
+	config.dcb.fOutxCtsFlow = true;  // Turn on CTS flow control
 	config.dcb.fOutxDsrFlow = false;
 	config.dcb.fDtrControl = DTR_CONTROL_DISABLE;
 	config.dcb.fDsrSensitivity = false;
@@ -140,6 +142,7 @@ void ArduinoInterface::closePort() {
 		CloseHandle(m_comPort);
 		m_comPort = INVALID_HANDLE_VALUE;
 	}
+	m_inWriteMode = false;
 }
 
 // Returns true if the track actually contains some data, else its considered blank or unformatted
@@ -164,8 +167,35 @@ bool ArduinoInterface::trackContainsData(const RawTrackData& trackData) {
 	return ((ffcount < 20) && (zerocount < 20));
 }
 
+// Turns on and off the writing interface.  If irError is returned the disk is write protected
+InterfaceResult ArduinoInterface::enableWriting(const bool enable, const bool reset) {
+	if (enable) {
+		// Enable the device
+		InterfaceResult res = runCommand(COMMAND_ENABLEWRITE);
+		if (res != InterfaceResult::irOK) return res;
+		m_inWriteMode = true;
+
+		// Reset?
+		if (reset) {
+			// And rewind to the first track
+			if (runCommand(COMMAND_REWIND) != InterfaceResult::irOK) return InterfaceResult::irCommError;
+			// Lets know where we are
+			return selectSurface(DiskSurface::dsUpper);
+		}
+		return InterfaceResult::irOK;
+	}
+	else {
+		// Disable the device
+		if (runCommand(COMMAND_DISABLE) != InterfaceResult::irOK) return InterfaceResult::irCommError;
+		m_inWriteMode = false;
+		return InterfaceResult::irOK;
+	}
+}
+
+
 // Turns on and off the reading interface
 InterfaceResult ArduinoInterface::enableReading(const bool enable, const bool reset) {
+	m_inWriteMode = false;
 	if (enable) {
 		// Enable the device
 		if (runCommand(COMMAND_ENABLE) != InterfaceResult::irOK) return InterfaceResult::irCommError;
@@ -213,26 +243,128 @@ InterfaceResult ArduinoInterface::selectSurface(const DiskSurface side) {
 	return runCommand((side == DiskSurface::dsUpper) ? COMMAND_HEAD0 : COMMAND_HEAD1);
 }
 
-// Read RAW data from the current track and surface selected using the supplied phase.  Phase must be 0123456789ABCDEF - see notes
-InterfaceResult ArduinoInterface::readCurrentTrack(const char phase, RawTrackData& trackData) {
-	InterfaceResult ir = runCommand(COMMAND_READTRACK, phase);
+
+
+void writeBit(RawTrackData& output, int& pos, int& bit, int value) {
+	if (pos >= RAW_TRACKDATA_LENGTH) return;
+
+	output[pos] <<= 1;
+	output[pos] |= value;
+	bit++;
+	if (bit >= 8) {
+		pos++;
+		bit = 0;
+	}
+
+}
+void unpack(const RawTrackData& data, RawTrackData& output) {
+	int pos = 0;
+	int index = 0;
+	int p2 = 0;
+	memset(output, 0, sizeof(output));
+	while (pos < RAW_TRACKDATA_LENGTH) {
+		// Each byte contains four pairs of bits that identify an MFM sequence to be encoded
+
+		for (int b = 6; b >= 0; b -= 2) {
+			unsigned char value = (data[index] >> b) & 3;
+			switch (value) {
+			case 0: // This is an '1'
+				// This can't happen, its an END OF DATA marker
+				return;				
+				break;
+			case 1: // This is an '01'
+				writeBit(output, pos, p2, 0);
+				writeBit(output, pos, p2, 1);
+				break;
+			case 2: // This is an '001'
+				writeBit(output, pos, p2, 0);
+				writeBit(output, pos, p2, 0);
+				writeBit(output, pos, p2, 1);
+				break;
+			case 3: // this is an '0001'
+				writeBit(output, pos, p2, 0);
+				writeBit(output, pos, p2, 0);
+				writeBit(output, pos, p2, 0);
+				writeBit(output, pos, p2, 1);
+				break;
+			}
+		}
+		index++;
+		if (index >= sizeof(data)) return;
+	}
+	// There will be left-over data
+}
+
+// Read RAW data from the current track and surface 
+InterfaceResult ArduinoInterface::readCurrentTrack(RawTrackData& trackData, const bool readFromIndexPulse) {
+	InterfaceResult ir = runCommand(COMMAND_READTRACK);
 	
+	RawTrackData tmp;
+
 	// Allow command retry
 	if (ir != InterfaceResult::irOK) {
 		// Clear the buffer
-		deviceRead(&trackData, RAW_TRACKDATA_LENGTH);
-		ir = runCommand(COMMAND_READTRACK, phase);
+		deviceRead(&tmp, RAW_TRACKDATA_LENGTH);
+		ir = runCommand(COMMAND_READTRACK);
 		if (ir != InterfaceResult::irOK) return ir;
 	}
 
-	// Failed to read the track?
-	if (!deviceRead(&trackData, RAW_TRACKDATA_LENGTH)) {
-		ir = runCommand(COMMAND_READTRACK, phase);
-		if (ir != InterfaceResult::irOK) return ir;
+	unsigned char signalPulse = readFromIndexPulse ? 1 : 0;
+	if (!deviceWrite(&signalPulse,1)) return InterfaceResult::irCommError;
 
-		return deviceRead(&trackData, RAW_TRACKDATA_LENGTH) ? InterfaceResult::irOK : InterfaceResult::irCommError;
+	// Keep reading until he hit RAW_TRACKDATA_LENGTH or a null byte is recieved
+	int bytePos = 0;
+	int readFail = 0;
+	for (;;) {
+		unsigned char value;
+		if (deviceRead(&value, 1)) {
+			if (value == 0) break; else
+				if (bytePos < RAW_TRACKDATA_LENGTH) tmp[bytePos++] = value;
+		}
+		else {
+			readFail++;
+			if (readFail>4) return InterfaceResult::irCommError;
+		}
 	}
-	else return InterfaceResult::irOK;
+	unpack(tmp, trackData);
+	return InterfaceResult::irOK;
+}
+
+
+// Writes RAW data onto the current track
+InterfaceResult ArduinoInterface::writeCurrentTrack(const unsigned char* data, const unsigned short numBytes, const bool writeFromIndexPulse) {
+	InterfaceResult ir = runCommand(COMMAND_WRITETRACK);
+	if (ir != InterfaceResult::irOK) return InterfaceResult::irCommError;
+	
+	unsigned char chr;
+	if (!deviceRead(&chr, 1)) return InterfaceResult::irCommError;
+
+	// 'N' means NO Writing, aka write protected
+	if (chr == 'N') return InterfaceResult::irError;
+	if (chr !='Y') return InterfaceResult::irCommError;
+
+	// Now we send the number of bytes we're planning on transmitting
+	unsigned char b = (numBytes >> 8);
+	if (!deviceWrite(&b, 1)) return InterfaceResult::irCommError;
+	b = numBytes & 0xFF;
+	if (!deviceWrite(&b, 1)) return InterfaceResult::irCommError;
+
+	// Explain if we want index pulse sync writing (slower and not required by normal AmigaDOS disks)
+	b = writeFromIndexPulse ? 1 : 0;
+	if (!deviceWrite(&b, 1)) return InterfaceResult::irCommError;
+
+	unsigned char response;
+	if (!deviceRead(&response, 1)) return InterfaceResult::irCommError;
+	if (response != '!') return InterfaceResult::irCommError;
+	
+	if (!deviceWrite((const void*)data, numBytes)) return InterfaceResult::irCommError;
+
+	if (!deviceRead(&response, 1)) return InterfaceResult::irCommError;
+	
+	// If this is a '1' then the Arduino didn't miss a single bit!
+	if (response != '1') return InterfaceResult::irCommError;
+
+	return InterfaceResult::irOK;
 }
 
 // Run a command that returns 1 or 0 for its response

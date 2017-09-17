@@ -36,6 +36,7 @@
 #endif
 
 
+#pragma region ABOUT_DIALOG
 // CAboutDlg dialog used for App About
 
 class CAboutDlg : public CDialogEx
@@ -68,9 +69,9 @@ void CAboutDlg::DoDataExchange(CDataExchange* pDX)
 BEGIN_MESSAGE_MAP(CAboutDlg, CDialogEx)
 END_MESSAGE_MAP()
 
+#pragma endregion ABOUT_DIALOG
 
-
-
+#pragma region COMPLETE_DIALOG
 // CAboutDlg dialog used for App About
 
 class CCompleteDialog : public CDialogEx
@@ -79,7 +80,7 @@ private:
 	void* m_sfx;
 	HBITMAP m_currentBitmap;
 public:
-	CCompleteDialog(void* sfx, bool partial);
+	CCompleteDialog(void* sfx, bool partial, bool writeMode);
 	virtual ~CCompleteDialog();
 
 	// Dialog Data
@@ -104,10 +105,14 @@ CCompleteDialog::~CCompleteDialog() {
 	if (m_currentBitmap) DeleteObject(m_currentBitmap);
 }
 
-CCompleteDialog::CCompleteDialog(void* sfx, bool partial) : CDialogEx(IDD_DIALOG)
+CCompleteDialog::CCompleteDialog(void* sfx, bool partial, bool writeMode) : CDialogEx(IDD_DIALOG)
 {
 	m_sfx = sfx;
-	m_currentBitmap = LoadBitmap(AfxGetInstanceHandle(), MAKEINTRESOURCE(partial ? IDB_DIALOG_WARNING : IDB_DIALOG_OK));
+	int id;
+	if (writeMode)
+		id = partial ? IDB_DIALOG_WARNING_WRITE : IDB_DIALOG_OK_WRITE;
+	else id = partial ? IDB_DIALOG_WARNING : IDB_DIALOG_OK;
+	m_currentBitmap = LoadBitmap(AfxGetInstanceHandle(), MAKEINTRESOURCE(id));
 }
 
 BOOL CCompleteDialog::OnInitDialog()
@@ -142,24 +147,23 @@ BEGIN_MESSAGE_MAP(CCompleteDialog, CDialogEx)
 END_MESSAGE_MAP()
 
 
+#pragma endregion COMPLETE_DIALOG
 
+#pragma region MAIN_DIALOG
 
 // CArduinoFloppyReaderWinDlg dialog
-
-
-
 CArduinoFloppyReaderWinDlg::CArduinoFloppyReaderWinDlg(CWnd* pParent /*=NULL*/)
 	: CDialogEx(IDD_ARDUINOFLOPPYREADERWIN_DIALOG, pParent)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
-	m_reader = nullptr;
+	m_iothread = nullptr;
 }
 
 void CArduinoFloppyReaderWinDlg::DoDataExchange(CDataExchange* pDX)
 {
 	CDialogEx::DoDataExchange(pDX);
 	DDX_Control(pDX, IDC_COMPORT, m_comport);
-	DDX_Control(pDX, IDC_FILENAME, m_filename);
+	DDX_Control(pDX, IDC_FILENAME, m_outputADF);
 	DDX_Control(pDX, IDC_PROGRESS, m_progressbar);
 	DDX_Control(pDX, IDC_TRACKNUMBER, m_statusTrack);
 	DDX_Control(pDX, IDC_DISKSIDE, m_statusSide);
@@ -169,6 +173,10 @@ void CArduinoFloppyReaderWinDlg::DoDataExchange(CDataExchange* pDX)
 	DDX_Control(pDX, IDC_STARTSTOP, m_copyButton);
 	DDX_Control(pDX, IDC_STATUS, m_statusText);
 	DDX_Control(pDX, IDC_SPIN2, m_spinner);
+	DDX_Control(pDX, IDC_FILENAME2, m_inputADF);
+	DDX_Control(pDX, IDC_BROWSE2, m_browseButton2);
+	DDX_Control(pDX, IDC_STARTSTOP2, m_writeButton);
+	DDX_Control(pDX, IDC_CHECK1, m_verify);
 }
 
 BEGIN_MESSAGE_MAP(CArduinoFloppyReaderWinDlg, CDialogEx)
@@ -178,6 +186,8 @@ BEGIN_MESSAGE_MAP(CArduinoFloppyReaderWinDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_STARTSTOP, &CArduinoFloppyReaderWinDlg::OnBnClickedStartstop)
 	ON_BN_CLICKED(IDC_BROWSE, &CArduinoFloppyReaderWinDlg::OnBnClickedBrowse)
 	ON_MESSAGE(WM_USER, &CArduinoFloppyReaderWinDlg::OnUserMessage)
+	ON_BN_CLICKED(IDC_BROWSE2, &CArduinoFloppyReaderWinDlg::OnBnClickedBrowse2)
+	ON_BN_CLICKED(IDC_STARTSTOP2, &CArduinoFloppyReaderWinDlg::OnBnClickedStartstop2)
 END_MESSAGE_MAP()
 
 
@@ -237,9 +247,15 @@ BOOL CArduinoFloppyReaderWinDlg::OnInitDialog()
 		FreeResource(resource);
 	}
 	m_spinner.SetRange(1, 999);
-
+	m_verify.SetCheck(TRUE);
 
 	return TRUE;  // return TRUE  unless you set the focus to a control
+}
+
+CArduinoFloppyReaderWinDlg::~CArduinoFloppyReaderWinDlg() {
+	m_cancelButtonPressed = true;
+
+	if (m_sfx) free(m_sfx);
 }
 
 // On Sys command
@@ -292,14 +308,12 @@ HCURSOR CArduinoFloppyReaderWinDlg::OnQueryDragIcon()
 }
 
 // Main thread
-bool CArduinoFloppyReaderWinDlg::runThread() {
+bool CArduinoFloppyReaderWinDlg::runThreadRead() {
 	ArduinoFloppyReader::ADFWriter writer;
 
 	CString tmpText;
 	m_comport.GetWindowText(tmpText);
 	unsigned int comPort = _ttoi(tmpText);
-	m_progressbar.SetRange(0, 100);
-	m_progressbar.SetPos(0);
 	
 	// Try to open the com port and talk to the device
 	m_statusText.SetWindowText(L"Opening COM port and setting up device...");
@@ -308,47 +322,15 @@ bool CArduinoFloppyReaderWinDlg::runThread() {
 		return false;
 	}
 
-	m_statusText.SetWindowText(L"Step 1 of 2: Performing disk analysis...");	
-
-	ArduinoFloppyReader::AnalysisResult analysisresult = writer.analyseDisk(
-		[this](int progress) -> bool {
-			// Update the progress bar
-			m_progressbar.SetPos(progress);
-			if (m_cancelButtonPressed) return false;
-			return true;
-		});
-
-	// See what happened
-	switch (analysisresult) {
-		case ArduinoFloppyReader::AnalysisResult::arComplete:				// Anaysis is complete and ready for use
-		// We allow this to continue!
-		break;
-
-		case ArduinoFloppyReader::AnalysisResult::arFailed:                  // Anaysis failed to read a disk
-			MessageBox(L"No valid data found on the disk.  Is this disk AmigaDOS formatted?", L"Disk Read Error", MB_OK | MB_ICONEXCLAMATION);
-			return false;
-			break;
-
-		case ArduinoFloppyReader::AnalysisResult::arAborted:                 // Analysis was aborted
-			MessageBox(L"Disk copy was aborted.", L"Aborted", MB_OK | MB_ICONINFORMATION);
-			return false;
-			break;
-
-		case ArduinoFloppyReader::AnalysisResult::arDriveError:              // Something wrong talking to thre drive
-			MessageBox(L"Communication error with the Arduino during read.\r\nPlease powercycle the Arduino and try again.", L"Arduino IO Error", MB_OK | MB_ICONEXCLAMATION);
-			return false;
-			break;			
-	}
-
 	// Analysis was complete and found some data.  Run the reader
-	m_statusText.SetWindowText(L"Step 2 of 2: Reading disk to ADF file...");
+	m_statusText.SetWindowText(L"Reading disk to ADF file...");
 	CString filename;
 	const unsigned int lastTrack = 80;
 	m_progressbar.SetRange(0, lastTrack*2);
 	m_progressbar.SetPos(0);
 
-	m_filename.GetWindowText(filename);
-	ArduinoFloppyReader::ADFResult readerResult = writer.writeADF(filename.GetBuffer(), lastTrack,
+	m_outputADF.GetWindowText(filename);
+	ArduinoFloppyReader::ADFResult readerResult = writer.DiskToADF(filename.GetBuffer(), lastTrack,
 		 [this](const int currentTrack, const ArduinoFloppyReader::DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound) -> ArduinoFloppyReader::WriteResponse {
 		
 		 if (m_cancelButtonPressed) return ArduinoFloppyReader::WriteResponse::wrAbort;
@@ -364,10 +346,10 @@ bool CArduinoFloppyReaderWinDlg::runThread() {
 
 		 m_progressbar.SetPos((currentTrack*2)+((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper)?1:0));
 
-		 if (retryCounter > 15) {
+		 if (retryCounter > 20) {
 			 switch (MessageBox(L"Disk has checksum errors/missing/damaged data.\r\n\r\n", L"Disk Read Errors", MB_ABORTRETRYIGNORE)) {
 				 case IDABORT: return ArduinoFloppyReader::WriteResponse::wrAbort;
-				 case IDRETRY: break;
+				 case IDRETRY: return ArduinoFloppyReader::WriteResponse::wrRetry;
 				 case IDIGNORE: return ArduinoFloppyReader::WriteResponse::wrSkipBadChecksums;				 
 			 }
 		}
@@ -389,35 +371,112 @@ bool CArduinoFloppyReaderWinDlg::runThread() {
 	return false;
 }
 
-afx_msg LRESULT CArduinoFloppyReaderWinDlg::OnUserMessage(WPARAM wparam, LPARAM lparam) {
-	if (m_reader) {
-		m_reader->join();
-		delete m_reader;
-		m_reader = nullptr;
+
+
+// Main thread
+bool CArduinoFloppyReaderWinDlg::runThreadWrite() {
+	ArduinoFloppyReader::ADFWriter writer;
+
+	CString tmpText;
+	m_comport.GetWindowText(tmpText);
+	unsigned int comPort = _ttoi(tmpText);
+
+	// Try to open the com port and talk to the device
+	m_statusText.SetWindowText(L"Opening COM port and setting up device...");
+	if (!writer.openDevice(comPort)) {
+		MessageBox(L"Unable to open COM port\r\n\r\nPlease check COM port number and connection and try again.", L"Error", MB_OK | MB_ICONEXCLAMATION);
+		return false;
 	}
-	m_copyButton.SetWindowText(L"Start Copy");
+
+	// Analysis was complete and found some data.  Run the reader
+	m_statusText.SetWindowText(L"Writing ADF file to disk...");
+	CString filename;
+	const unsigned int lastTrack = 80;
+	m_progressbar.SetRange(0, lastTrack * 2);
+	m_progressbar.SetPos(0);
+
+	m_inputADF.GetWindowText(filename);
+	
+	ArduinoFloppyReader::ADFResult readerResult = writer.ADFToDisk(filename.GetBuffer(), m_verify.GetCheck()!=0,
+		[this](const int currentTrack, const ArduinoFloppyReader::DiskSurface currentSide, const bool isVerifyError) -> ArduinoFloppyReader::WriteResponse {
+
+		if (m_cancelButtonPressed) return ArduinoFloppyReader::WriteResponse::wrAbort;
+
+		CString str;
+		str.Format(L"%i", currentTrack);
+		m_statusTrack.SetWindowText(str);
+		m_statusSide.SetWindowText((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper) ? L"Upper" : L"Lower");
+
+		m_progressbar.SetPos((currentTrack * 2) + ((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper) ? 1 : 0));
+
+		if (isVerifyError) {
+			switch (MessageBox(L"Verify error writing track.", L"Disk Write Error", MB_ABORTRETRYIGNORE)) {
+			case IDABORT: return ArduinoFloppyReader::WriteResponse::wrAbort;
+			case IDRETRY: return ArduinoFloppyReader::WriteResponse::wrRetry;
+			case IDIGNORE: return ArduinoFloppyReader::WriteResponse::wrSkipBadChecksums;
+			}
+		}
+
+		// Just continue
+		return ArduinoFloppyReader::WriteResponse::wrContinue;
+	});
+
+
+	switch (readerResult) {
+	case ArduinoFloppyReader::ADFResult::adfrComplete:					m_partial = false;  return true;
+	case ArduinoFloppyReader::ADFResult::adfrCompletedWithErrors:		m_partial = true; return true;
+	case ArduinoFloppyReader::ADFResult::adfrAborted:					return false;
+	case ArduinoFloppyReader::ADFResult::adfrFileError:					MessageBox(L"Unable to open the specified file to read from it.", L"Input File Error", MB_OK | MB_ICONEXCLAMATION); return false;
+	case ArduinoFloppyReader::ADFResult::adfrDriveError:				MessageBox(L"An error occured communicating with the Arduino interface.", L"I/O Error", MB_OK | MB_ICONEXCLAMATION); return false;
+	case ArduinoFloppyReader::ADFResult::adfrDiskWriteProtected:		MessageBox(L"Unable to write to the disk.  Disk is write protected.", L"Write Protection Error", MB_OK | MB_ICONEXCLAMATION); return false;
+	}
+
+	return false;
+}
+
+afx_msg LRESULT CArduinoFloppyReaderWinDlg::OnUserMessage(WPARAM wparam, LPARAM lparam) {
+	if (m_iothread) {
+		if (m_iothread->joinable()) m_iothread->join();
+		delete m_iothread;
+		m_iothread = nullptr;
+	}
+	m_copyButton.SetWindowText(L"Copy Disk");
+	m_writeButton.SetWindowText(L"Write Disk");
 	return 0;
 }
 
-void CArduinoFloppyReaderWinDlg::threadFinished(bool successful) {
-	m_browseButton.EnableWindow(true);
-	m_filename.EnableWindow(true);
-	m_comport.EnableWindow(true);
+// Enabel the selectable items on the dialog
+void CArduinoFloppyReaderWinDlg::enableDialog(bool enable) {
+	m_browseButton.EnableWindow(enable);
+	m_browseButton2.EnableWindow(enable);
+	m_outputADF.EnableWindow(enable);
+	m_inputADF.EnableWindow(enable);
+	m_comport.EnableWindow(enable);
+	m_verify.EnableWindow(enable);
 
-	m_statusText.SetWindowText(L"Ready");
-	m_progressbar.SetPos(0);
-	m_statusTrack.SetWindowText(L"0");
-	m_statusSide.SetWindowText(L"Upper");
-	m_statusGood.SetWindowText(L"0");
-	m_statusPartial.SetWindowText(L"0");
+	if (enable) {
+		m_statusText.SetWindowText(L"Ready");
+		m_progressbar.SetPos(0);
+		m_statusTrack.SetWindowText(L"0");
+		m_statusSide.SetWindowText(L"Upper");
+		m_statusGood.SetWindowText(L"0");
+		m_statusPartial.SetWindowText(L"0");
+		m_copyButton.EnableWindow(true);
+		m_writeButton.EnableWindow(true);
+	}
+}
 
+// Called when the thread for reading ifinishes
+void CArduinoFloppyReaderWinDlg::threadFinishedReading(bool successful) {
+	enableDialog(true);
+	
 	if (successful) {
 		if (m_partial) {
-			CCompleteDialog dlg(m_sfx, true);
+			CCompleteDialog dlg(m_sfx, true, false);
 			dlg.DoModal();
 		}
 		else {
-			CCompleteDialog dlg(m_sfx, false);
+			CCompleteDialog dlg(m_sfx, false, false);
 			dlg.DoModal();
 		}
 	}
@@ -426,34 +485,92 @@ void CArduinoFloppyReaderWinDlg::threadFinished(bool successful) {
 	PostMessage(WM_USER, 0, 0);
 }
 
+
+// Called when the thread for reading ifinishes
+void CArduinoFloppyReaderWinDlg::threadFinishedWriting(bool successful) {
+	enableDialog(true);
+
+	if (successful) {
+		if (m_partial) {
+			CCompleteDialog dlg(m_sfx, true, true);
+			dlg.DoModal();
+		}
+		else {
+			CCompleteDialog dlg(m_sfx, false, true);
+			dlg.DoModal();
+		}
+	}
+
+	// Free the thread
+	PostMessage(WM_USER, 0, 0);
+}
+
+
+// Save the comp port to the registry
+void CArduinoFloppyReaderWinDlg::saveComPort() {
+	CString port;
+	m_comport.GetWindowText(port);
+	RegSetValueW(HKEY_CURRENT_USER, L"Software\\ArduinoFloppyReader\\ComPort", REG_SZ, port.GetBuffer(), port.GetLength());	
+}
+
+// Disk to ADF file start and stop button
 void CArduinoFloppyReaderWinDlg::OnBnClickedStartstop()
 {
-	if (m_reader) {
+	if (m_iothread) {
 		m_cancelButtonPressed = true;
 	}
 	else {		
-		CString port;
-		m_comport.GetWindowText(port);
-		RegSetValueW(HKEY_CURRENT_USER, L"Software\\ArduinoFloppyReader\\ComPort", REG_SZ, port.GetBuffer(), port.GetLength());
-		m_filename.GetWindowText(port);
-		if (port.GetLength() < 1) {
+		saveComPort();
+
+		CString filename;
+		m_outputADF.GetWindowText(filename);
+		if (filename.GetLength() < 1) {
 			MessageBox(L"You need to specify an ADF filename first", L"Error", MB_OK | MB_ICONEXCLAMATION);
 			return;
 		}
 
 		m_cancelButtonPressed = false;
-		m_browseButton.EnableWindow(false);
-		m_filename.EnableWindow(false);
-		m_comport.EnableWindow(false);
-		m_copyButton.SetWindowText(L"Abort!");
+		enableDialog(false);
 
-		m_reader = new std::thread([this]() {
-			this->threadFinished(this->runThread());
+		m_copyButton.SetWindowText(L"Abort!");
+		m_writeButton.EnableWindow(false);
+
+		m_iothread = new std::thread([this]() {
+			this->threadFinishedReading(this->runThreadRead());
 		});
 	}
 }
 
-// Choose file to save as
+// ADF to Disk write button
+void CArduinoFloppyReaderWinDlg::OnBnClickedStartstop2()
+{
+	if (m_iothread) {
+		m_cancelButtonPressed = true;
+	}
+	else {
+		saveComPort();
+
+		CString filename;
+		m_inputADF.GetWindowText(filename);
+		if (filename.GetLength() < 1) {
+			MessageBox(L"You need to specify an ADF filename first", L"Error", MB_OK | MB_ICONEXCLAMATION);
+			return;
+		}
+
+		m_cancelButtonPressed = false;
+		enableDialog(false);
+
+		m_copyButton.EnableWindow(false);
+		m_writeButton.SetWindowText(L"Abort!");
+
+		m_iothread = new std::thread([this]() {
+			this->threadFinishedWriting(this->runThreadWrite());
+		});
+	}
+}
+
+
+// Browse to select ADF file to save to
 void CArduinoFloppyReaderWinDlg::OnBnClickedBrowse()
 {
 	// szFilters is a text string that includes two file name filters:
@@ -461,11 +578,33 @@ void CArduinoFloppyReaderWinDlg::OnBnClickedBrowse()
 
 	// Create an Save dialog
 	CString oldFileName;
-	m_filename.GetWindowText(oldFileName);
+	m_outputADF.GetWindowText(oldFileName);
 
 	CFileDialog fileDlg(FALSE, _T("adf"), oldFileName, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NODEREFERENCELINKS | OFN_ENABLESIZING | OFN_DONTADDTORECENT | OFN_EXPLORER, szFilters, this);
+	fileDlg.m_ofn.lpstrTitle = L"Save Disk to ADF File";
 
 	// Display it
 	if (fileDlg.DoModal() == IDOK)
-		m_filename.SetWindowText(fileDlg.GetPathName());
+		m_outputADF.SetWindowText(fileDlg.GetPathName());
 }
+
+// Browse to load and copy to disk
+void CArduinoFloppyReaderWinDlg::OnBnClickedBrowse2()
+{
+	// szFilters is a text string that includes two file name filters:
+	TCHAR szFilters[] = _T("Amiga Disk Files (*.adf)|*.adf|All Files (*.*)|*.*||");
+
+	// Create an Save dialog
+	CString oldFileName;
+	m_inputADF.GetWindowText(oldFileName);
+
+	CFileDialog fileDlg(TRUE, _T("adf"), oldFileName, OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NODEREFERENCELINKS | OFN_ENABLESIZING | OFN_EXPLORER, szFilters, this);
+	fileDlg.m_ofn.lpstrTitle = L"Select an ADF File to Write To Disk";
+
+	// Display it
+	if (fileDlg.DoModal() == IDOK)
+		m_inputADF.SetWindowText(fileDlg.GetPathName());
+}
+
+
+#pragma endregion MAIN_DIALOG

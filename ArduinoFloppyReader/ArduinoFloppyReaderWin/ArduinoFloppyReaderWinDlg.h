@@ -33,7 +33,8 @@ class CArduinoFloppyReaderWinDlg : public CDialogEx
 // Construction
 public:
 	CArduinoFloppyReaderWinDlg(CWnd* pParent = NULL);	// standard constructor
-	std::thread* m_reader;
+	~CArduinoFloppyReaderWinDlg(); 
+	std::thread* m_iothread;
 	void* m_sfx;
 	bool m_cancelButtonPressed;
 	bool m_partial;
@@ -60,12 +61,12 @@ protected:
 public:
 	afx_msg void OnBnClickedStartstop();
 	afx_msg void OnBnClickedBrowse();
+	void enableDialog(bool enable);
+
 	afx_msg LRESULT OnUserMessage(WPARAM wparam, LPARAM lparam);
-	// Com Port Edit Box
+
 	CEdit m_comport;
-	// Filename box
-	CEdit m_filename;
-	// Progress bar
+	CEdit m_outputADF;
 	CProgressCtrl m_progressbar;
 	CStatic m_statusTrack;
 	CStatic m_statusSide;
@@ -73,10 +74,19 @@ public:
 	CStatic m_statusPartial;
 	CButton m_browseButton;
 	CButton m_copyButton;
-
-	// Main thread loop
-	bool runThread();
-	void threadFinished(bool successful);
 	CStatic m_statusText;
 	CSpinButtonCtrl m_spinner;
+	CEdit m_inputADF;
+	CButton m_browseButton2;
+	CButton m_writeButton;
+	CButton m_verify;
+
+	// Main thread loop
+	bool runThreadRead();
+	void threadFinishedReading(bool successful);
+	bool runThreadWrite();
+	void threadFinishedWriting(bool successful);
+	afx_msg void OnBnClickedBrowse2();
+	afx_msg void OnBnClickedStartstop2();
+	void saveComPort();
 };
