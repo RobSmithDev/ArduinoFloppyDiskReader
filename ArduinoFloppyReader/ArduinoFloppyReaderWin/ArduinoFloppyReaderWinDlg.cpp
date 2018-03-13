@@ -1,6 +1,6 @@
 /* ArduinoFloppyReaderWin
 *
-* Copyright (C) 2017 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2018 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk
 *
 * This program is free software; you can redistribute it and/or
@@ -22,12 +22,12 @@
 //////////////////////////////////////////////////////////////////////////////////////////
 
 #include "stdafx.h"
+#include <afxwin.h>
 #include "ArduinoFloppyReaderWin.h"
 #include "ArduinoFloppyReaderWinDlg.h"
 #include "afxdialogex.h"
 #include <mmsystem.h>
 #include "..\lib\ADFWriter.h"
-#include "afxwin.h"
 #include <Windows.h>
 
 
@@ -37,43 +37,144 @@
 
 
 #pragma region ABOUT_DIALOG
-// CAboutDlg dialog used for App About
 
+// CAboutDlg dialog used for App About
 class CAboutDlg : public CDialogEx
 {
 public:
-	CAboutDlg();
+	CAboutDlg() : CDialogEx(IDD_ABOUTBOX) {};
 
 // Dialog Data
 #ifdef AFX_DESIGN_TIME
 	enum { IDD = IDD_ABOUTBOX };
 #endif
-
 	protected:
-	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV support
+		virtual void DoDataExchange(CDataExchange* pDX) { CDialogEx::DoDataExchange(pDX); };
 
-// Implementation
 protected:
 	DECLARE_MESSAGE_MAP()
 };
-
-CAboutDlg::CAboutDlg() : CDialogEx(IDD_ABOUTBOX)
-{
-}
-
-void CAboutDlg::DoDataExchange(CDataExchange* pDX)
-{
-	CDialogEx::DoDataExchange(pDX);
-}
 
 BEGIN_MESSAGE_MAP(CAboutDlg, CDialogEx)
 END_MESSAGE_MAP()
 
 #pragma endregion ABOUT_DIALOG
 
-#pragma region COMPLETE_DIALOG
-// CAboutDlg dialog used for App About
+   
 
+#pragma region DIAGNOSTICS_DIALOG
+
+// CDiagnosticsDialog dialog used diagnostics status window
+class CDiagnosticsDialog : public CDialogEx
+{
+public:
+	CDiagnosticsDialog(int comPort) : CDialogEx(IDD_DIAGNOSTICS), m_comPort(comPort), m_mainThread(nullptr) {};
+	virtual ~CDiagnosticsDialog() {
+		if (m_mainThread) {
+			if (m_mainThread->joinable()) m_mainThread->join();
+			delete m_mainThread;
+		}
+	}
+
+public:
+	CEdit m_results;
+
+	// Dialog Data
+#ifdef AFX_DESIGN_TIME
+	enum { IDD = IDD_DIAGNOSTICS };
+#endif
+
+protected:
+	virtual void DoDataExchange(CDataExchange* pDX) {
+		CDialogEx::DoDataExchange(pDX); 
+		DDX_Control(pDX, IDC_EDIT1, m_results);
+	};
+													
+
+	BOOL OnInitDialog() 
+	{
+		CDialogEx::OnInitDialog();
+		m_threadRunning = true;
+		
+		WCHAR buffer[200];
+		swprintf_s(buffer, L"Running Diagnostics on COM %i", m_comPort);
+		SetWindowText(buffer);
+
+		CMenu* mnu = this->GetSystemMenu(FALSE);
+		mnu->EnableMenuItem(SC_CLOSE, MF_BYCOMMAND | MF_GRAYED | MF_DISABLED);
+	
+		// Main processing thread
+		m_mainThread = new std::thread([this]()->void {
+			runDiagnostics();
+			m_threadRunning = false;
+		});
+		
+		return true;
+	}
+
+protected:
+	DECLARE_MESSAGE_MAP()
+
+private:
+	int m_comPort;
+	bool m_threadRunning = true;
+	ArduinoFloppyReader::ADFWriter writer;
+	std::thread* m_mainThread;
+
+	// This is ran under a thread
+	void runDiagnostics() {
+		writer.runDiagnostics(m_comPort, [this](bool isError, const std::string message)->void {
+			CString strLine;
+
+			if (isError) strLine = "DIAGNOSTICS FAILED: "; 
+			strLine += message.c_str();
+			strLine += "\r\n";
+
+			// get the initial text length
+			int nLength = m_results.GetWindowTextLength();
+			// put the selection at the end of text
+			m_results.SetSel(nLength, nLength);
+			// replace the selection
+			m_results.ReplaceSel(strLine);
+
+		}, [this](bool isQuestion, const std::string question)->bool {
+			if (isQuestion) 
+				return MessageBoxA(GetSafeHwnd(),(LPCSTR)question.c_str(), "Diagnostics Question", MB_YESNO | MB_ICONQUESTION) == IDYES;
+			else 
+				return MessageBoxA(GetSafeHwnd(), (LPCSTR)question.c_str(), "Diagnostics Prompt", MB_OKCANCEL | MB_ICONINFORMATION) == IDOK;
+		});
+
+		writer.closeDevice();
+
+		CMenu* mnu = this->GetSystemMenu(FALSE);
+		mnu->EnableMenuItem(SC_CLOSE, MF_BYCOMMAND | MF_ENABLED);
+	}
+
+	// Prevent Enter and ESC closing the dialog
+	BOOL PreTranslateMessage(MSG* pMsg)
+	{
+		if (pMsg->message == WM_KEYDOWN)
+		{
+			if (pMsg->wParam == VK_RETURN || pMsg->wParam == VK_ESCAPE)
+			{
+				return !m_threadRunning;                // Do not process further
+			}
+		}
+
+		return CWnd::PreTranslateMessage(pMsg);
+	}
+
+};
+
+BEGIN_MESSAGE_MAP(CDiagnosticsDialog, CDialogEx)
+END_MESSAGE_MAP()
+
+#pragma endregion DIAGNOSTICS_DIALOG
+
+
+#pragma region COMPLETE_DIALOG
+
+// CCompleteDialog dialog used to show copy/write completion
 class CCompleteDialog : public CDialogEx
 {
 private:
@@ -177,6 +278,7 @@ void CArduinoFloppyReaderWinDlg::DoDataExchange(CDataExchange* pDX)
 	DDX_Control(pDX, IDC_BROWSE2, m_browseButton2);
 	DDX_Control(pDX, IDC_STARTSTOP2, m_writeButton);
 	DDX_Control(pDX, IDC_CHECK1, m_verify);
+	DDX_Control(pDX, IDC_STARTSTOP3, m_diagnostics);
 }
 
 BEGIN_MESSAGE_MAP(CArduinoFloppyReaderWinDlg, CDialogEx)
@@ -188,6 +290,7 @@ BEGIN_MESSAGE_MAP(CArduinoFloppyReaderWinDlg, CDialogEx)
 	ON_MESSAGE(WM_USER, &CArduinoFloppyReaderWinDlg::OnUserMessage)
 	ON_BN_CLICKED(IDC_BROWSE2, &CArduinoFloppyReaderWinDlg::OnBnClickedBrowse2)
 	ON_BN_CLICKED(IDC_STARTSTOP2, &CArduinoFloppyReaderWinDlg::OnBnClickedStartstop2)
+	ON_BN_CLICKED(IDC_STARTSTOP3, &CArduinoFloppyReaderWinDlg::OnBnClickedStartstop3)
 END_MESSAGE_MAP()
 
 
@@ -318,7 +421,9 @@ bool CArduinoFloppyReaderWinDlg::runThreadRead() {
 	// Try to open the com port and talk to the device
 	m_statusText.SetWindowText(L"Opening COM port and setting up device...");
 	if (!writer.openDevice(comPort)) {
-		MessageBox(L"Unable to open COM port\r\n\r\nPlease check COM port number and connection and try again.", L"Error", MB_OK | MB_ICONEXCLAMATION);
+		std::string msg = "Unable to open COM port:\r\n\r\n";
+		msg += writer.getLastError();
+		MessageBoxA(GetSafeHwnd(), msg.c_str(), "Error", MB_OK | MB_ICONEXCLAMATION);
 		return false;
 	}
 
@@ -365,7 +470,12 @@ bool CArduinoFloppyReaderWinDlg::runThreadRead() {
 		case ArduinoFloppyReader::ADFResult::adfrFileError:					MessageBox(L"Unable to open the specified file to write to it.", L"Output File Error", MB_OK | MB_ICONEXCLAMATION); return false;
 		case ArduinoFloppyReader::ADFResult::adfrFileIOError:				MessageBox(L"An error occured writing to the specified file.", L"Output File Error", MB_OK | MB_ICONEXCLAMATION); return false;
 		case ArduinoFloppyReader::ADFResult::adfrCompletedWithErrors:		m_partial = true; return true;
-		case ArduinoFloppyReader::ADFResult::adfrDriveError:				MessageBox(L"An error occured communicating with the Arduino interface.", L"I/O Error", MB_OK | MB_ICONEXCLAMATION); return false;
+		case ArduinoFloppyReader::ADFResult::adfrDriveError:				{
+			std::string msg = "An error occured communicating with the Arduino interface:\r\n\r\n";
+			msg += writer.getLastError();
+			MessageBoxA(GetSafeHwnd(), msg.c_str(), "I/O Error", MB_OK | MB_ICONEXCLAMATION);
+			return false;
+		}
 	}
 
 	return false;
@@ -384,7 +494,9 @@ bool CArduinoFloppyReaderWinDlg::runThreadWrite() {
 	// Try to open the com port and talk to the device
 	m_statusText.SetWindowText(L"Opening COM port and setting up device...");
 	if (!writer.openDevice(comPort)) {
-		MessageBox(L"Unable to open COM port\r\n\r\nPlease check COM port number and connection and try again.", L"Error", MB_OK | MB_ICONEXCLAMATION);
+		std::string msg = "Unable to open COM port:\r\n\r\n";
+		msg += writer.getLastError();
+		MessageBoxA(GetSafeHwnd(), msg.c_str(), "Error", MB_OK | MB_ICONEXCLAMATION);
 		return false;
 	}
 
@@ -427,7 +539,12 @@ bool CArduinoFloppyReaderWinDlg::runThreadWrite() {
 	case ArduinoFloppyReader::ADFResult::adfrCompletedWithErrors:		m_partial = true; return true;
 	case ArduinoFloppyReader::ADFResult::adfrAborted:					return false;
 	case ArduinoFloppyReader::ADFResult::adfrFileError:					MessageBox(L"Unable to open the specified file to read from it.", L"Input File Error", MB_OK | MB_ICONEXCLAMATION); return false;
-	case ArduinoFloppyReader::ADFResult::adfrDriveError:				MessageBox(L"An error occured communicating with the Arduino interface.", L"I/O Error", MB_OK | MB_ICONEXCLAMATION); return false;
+	case ArduinoFloppyReader::ADFResult::adfrDriveError: {
+			std::string msg = "An error occured communicating with the Arduino interface:\r\n\r\n";
+			msg += writer.getLastError();
+			MessageBoxA(GetSafeHwnd(), msg.c_str(), "I/O Error", MB_OK | MB_ICONEXCLAMATION); 
+			return false;
+		}
 	case ArduinoFloppyReader::ADFResult::adfrDiskWriteProtected:		MessageBox(L"Unable to write to the disk.  Disk is write protected.", L"Write Protection Error", MB_OK | MB_ICONEXCLAMATION); return false;
 	}
 
@@ -453,6 +570,7 @@ void CArduinoFloppyReaderWinDlg::enableDialog(bool enable) {
 	m_inputADF.EnableWindow(enable);
 	m_comport.EnableWindow(enable);
 	m_verify.EnableWindow(enable);
+	m_diagnostics.EnableWindow(enable);
 
 	if (enable) {
 		m_statusText.SetWindowText(L"Ready");
@@ -608,3 +726,14 @@ void CArduinoFloppyReaderWinDlg::OnBnClickedBrowse2()
 
 
 #pragma endregion MAIN_DIALOG
+
+// The Run Diagnostics button
+void CArduinoFloppyReaderWinDlg::OnBnClickedStartstop3()
+{
+	CString tmpText;
+	m_comport.GetWindowText(tmpText);
+	unsigned int comPort = _ttoi(tmpText);
+
+	CDiagnosticsDialog dlgDiagnostics(comPort);
+	dlgDiagnostics.DoModal();
+}

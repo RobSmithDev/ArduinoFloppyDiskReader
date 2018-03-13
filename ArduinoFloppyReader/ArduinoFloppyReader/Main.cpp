@@ -1,6 +1,6 @@
 /* ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2018 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk
 *
 * This program is free software; you can redistribute it and/or
@@ -25,10 +25,12 @@
 #include "stdafx.h"
 #include <windows.h>
 #include "..\lib\ADFWriter.h"
+#include <conio.h>
 
 using namespace ArduinoFloppyReader;
 
 ADFWriter writer;
+
 
 // Read an ADF file and write it to disk
 void adf2Disk(wchar_t* argv[], bool verify) {
@@ -58,7 +60,8 @@ void adf2Disk(wchar_t* argv[], bool verify) {
 	case adfrCompletedWithErrors:		printf("\rADF file written to disk but there were errors during verification                 "); break;
 	case adfrAborted:					printf("\rWriting ADF file to disk                                                           "); break;
 	case adfrFileError:					printf("\rError opening ADF file.                                                            "); break;
-	case adfrDriveError:				printf("\rError communicating with the Arduino interface.                                    "); break;
+	case adfrDriveError:				printf("\rError communicating with the Arduino interface.                                    "); 
+									    printf("\n%s                                                  ", writer.getLastError().c_str()); break;
 	case adfrDiskWriteProtected:		printf("\rError, disk is write protected!                                                    "); break;
 	}
 }
@@ -90,22 +93,53 @@ void disk2ADF(wchar_t* argv[]) {
 	case adfrFileError:					printf("\rError creating ADF file.                                                           "); break;
 	case adfrFileIOError:				printf("\rError writing to ADF file.                                                         "); break;
 	case adfrCompletedWithErrors:		printf("\rADF file created with partial success.                                             "); break;
-	case adfrDriveError:				printf("\rError communicating with the Arduino interface.                                    "); break;
+	case adfrDriveError:				printf("\rError communicating with the Arduino interface.                                    ");
+										printf("\n%s                                                  ", writer.getLastError().c_str()); break;
 	}
+}
+
+// Run the diagnostics module
+void runDiagnostics(int comPort) {
+	printf("\rRunning diagnostics on COM port: %i\n",comPort);
+
+	writer.runDiagnostics(comPort, [](bool isError, const std::string message)->void {
+		if (isError)
+			printf("DIAGNOSTICS FAILED: %s\n",message.c_str());
+		else 
+			printf("%s\n", message.c_str());
+	}, [](bool isQuestion, const std::string question)->bool {
+		if (isQuestion) 
+			printf("%s [Y/N]: ", question.c_str());
+		else 
+			printf("%s [Enter/ESC]: ", question.c_str());
+
+		char c;
+		do {
+			c = _getch();
+			c=toupper(c);
+		} while ((c != 'Y') && (c != 'N') && (c != '\n') && (c != '\r') && (c != '\x1B'));
+		printf("%c\n", c);
+
+		return (c == 'Y') || (c == '\n') || (c == '\r') || (c == '\x1B');
+	});
+
+	writer.closeDevice();
 }
 
 int wmain(int argc, wchar_t* argv[], wchar_t *envp[])
 {
-	printf("Arduino Amiga ADF Floppy disk Reader/Writer, Copyright (C) 2017 Robert Smith\r\n");
+	printf("Arduino Amiga ADF Floppy disk Reader/Writer, Copyright (C) 2017-2018 Robert Smith\r\n");
 	printf("Full sourcecode and documentation at http://amiga.robsmithdev.co.uk\r\n");
 	printf("This is free software licenced under the GNU General Public Licence V3\r\n\r\n");
 
 	if (argc < 3) {
 		printf("Usage:\r\n\n");
 		printf("To read a disk to an ADF file:\r\n");
-		printf("ArduinoFloppyReader COMPORT OutputFilename.ADF [READ]\r\n\r\n");
+		printf("ArduinoFloppyReader <COMPORT> OutputFilename.ADF [READ]\r\n\r\n");
 		printf("To write an ADF file to disk:\r\n");
-		printf("ArduinoFloppyReader COMPORT InputFilename.ADF WRITE [VERIFY]\r\n\r\n");
+		printf("ArduinoFloppyReader <COMPORT> InputFilename.ADF WRITE [VERIFY]\r\n\r\n");
+		printf("To start interface diagnostics:\r\n");
+		printf("ArduinoFloppyReader DIAGNOSTIC <COMPORT>\r\n\r\n");
 		return 0;
 	}
 
@@ -120,12 +154,22 @@ int wmain(int argc, wchar_t* argv[], wchar_t *envp[])
 		verify = wcscmp(argv[4], L"VERIFY") == 0;
 	}
 
-	writer.openDevice(_wtoi(argv[1]));
+	_wcsupr(argv[1]);
+	if (wcscmp(argv[1], L"DIAGNOSTIC") == 0) {
+		runDiagnostics(_wtoi(argv[2]));
+	}
+	else {
 
-	if (writeMode) adf2Disk(argv,verify); else disk2ADF(argv);
+		if (!writer.openDevice(_wtoi(argv[1]))) {
+			printf("\rError opening COM port: %s  ", writer.getLastError().c_str());
+		}
+		else {
 
-	writer.closeDevice();
+			if (writeMode) adf2Disk(argv, verify); else disk2ADF(argv);
 
+			writer.closeDevice();
+		}
+	}
 	
 	getchar();
     return 0;

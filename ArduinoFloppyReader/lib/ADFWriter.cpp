@@ -1,6 +1,6 @@
 /* ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2018 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk
 *
 * This library is free software; you can redistribute it and/or
@@ -31,13 +31,17 @@
 // were taken from the excellent documentation by Laurent Clévy at http://lclevy.free.fr/adflib/adf_info.html
 // Also credits to Keith Monahan https://www.techtravels.org/tag/mfm/ regarding a bug in the MFM sector start data
 
-#include "stdafx.h"
-#include <windows.h>
+#ifdef USING_MFC
+#include <afxwin.h>
+#else
+#include <Windows.h>
+#endif
 #include <vector>
 #include <algorithm>
 #include "ADFWriter.h"
 #include "ArduinoInterface.h"
 #include <assert.h>
+#include <sstream>
 
 using namespace ArduinoFloppyReader;
 
@@ -48,7 +52,10 @@ using namespace ArduinoFloppyReader;
 #define NUM_SECTORS_PER_TRACK 11						 // Number of sectors per track
 #define RAW_SECTOR_SIZE (8+56+SECTOR_BYTES+SECTOR_BYTES)      // Size of a sector, *Including* the sector sync word longs
 #define ADF_TRACK_SIZE (SECTOR_BYTES*NUM_SECTORS_PER_TRACK)   // Bytes required for a single track
-#define TRACK_FILLER_SIZE 256                                 // Theriticallt this would be 532 bytes, but if the disk spins slower or fast this would be wrong
+#define TRACK_FILLER_SIZE 256                                 // Theritically this would be 532 bytes, but if the disk spins slower or fast this would be wrong
+
+
+const char* TEST_BYTE_SEQUENCE = "amiga.robsmithdev.co.uk";
 
 // Buffer to hold raw data for just a single sector
 typedef unsigned char RawEncodedSector[RAW_SECTOR_SIZE];
@@ -280,7 +287,7 @@ bool decodeSector(const RawEncodedSector& rawSector, const unsigned int trackNum
 
 	// Easier to operate on
 	unsigned char* sectorData = (unsigned char*)rawSector;
-
+ 
 	// Read the first 4 bytes (8).  This  is the track header data	
 	sector.headerChecksumCalculated = decodeMFMdata((unsigned long*)(sectorData + 8), (unsigned long*)&sector, 4);
 	// Decode the label data and update the checksum
@@ -490,14 +497,381 @@ void mergeInvalidSectors(DecodedTrack& track) {
 
 // Open the device we want to use.  Returns TRUE if it worked
 bool ADFWriter::openDevice(const unsigned int comPort) {
-	if (m_device.openPort(comPort) != InterfaceResult::irOK) return false;
+	if (m_device.openPort(comPort) != DiagnosticResponse::drOK) return false;
 	Sleep(100);
-	return m_device.enableReading(true, true)==InterfaceResult::irOK;
+	return m_device.enableReading(true, true)== DiagnosticResponse::drOK;
 }
 
 // Close the device when we've finished
 void ADFWriter::closeDevice() {
 	m_device.closePort();
+}
+
+
+// Run diagnostics on the system.  You do not need to call openDevice first.  Return TURE if everything passed
+bool ADFWriter::runDiagnostics(const unsigned int comPort, std::function<void(bool isError, const std::string message)> messageOutput, std::function<bool(bool isQuestion, const std::string question)> askQuestion) {
+	std::stringstream msg;
+	if (!messageOutput) return false;
+	if (!askQuestion) return false;
+
+	if (!askQuestion(false, "Please insert a disk in the drive.\r\nUse a disk that you dont mind being erased.\nThis disk must contain data/formatted as an AmigaDOS disk")) {
+		messageOutput(true, "Diagnostics aborted");
+		return false;
+	}
+
+	msg << "Attempting to open and use COM " << comPort << " without CTS";
+	messageOutput(false,msg.str());
+
+	// Step 1 is to check the com port stuff
+	DiagnosticResponse r = m_device.openPort(comPort, false);
+
+	// Check response
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true,m_device.getLastErrorStr());
+		messageOutput(true, "Please check Arduino power and the TXD/RXD on the USB->Serial board are connected to the right pins on the Arduino");
+		return false;
+	}
+
+	// Step 2: This has been setup with CTS stuff disabled, but the port opened.  So lets validate CTS *is* working as we expect it to
+	
+	messageOutput(false, "Testing CTS pin");
+	r = m_device.testCTS(comPort);
+	
+	// Check response
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true, m_device.getLastErrorStr());
+		messageOutput(true, "Please check the following PINS on the Arduino: A2");
+		return false;
+	}
+
+	// Step 3: CTS is working correctly, so re-open the port in normal mode
+	messageOutput(false, "CTS OK.  Reconnecting with CTS enabled");
+	m_device.closePort();
+	r = m_device.openPort(comPort, true);
+
+	// Check response
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true, m_device.getLastErrorStr());
+		return false;
+	}
+
+	// Functions to test
+	messageOutput(false, "Enabling the drive (please listen and watch the drive)");
+	r = m_device.enableReading(true, false);
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true, m_device.getLastErrorStr());
+		return false;
+	}
+
+	// Ask the user for verification of the result
+	if (!askQuestion(true,"Did the floppy disk start spinning, and did the drive LED switch on?")) {
+		messageOutput(true, "Please check the drive has power and the following PINS on the Arduino: 5 and A0");
+		return false;
+	}
+
+	// Now see if we can find track 0
+	messageOutput(false, "Asking the Arduino to find Track 0");
+	r = m_device.findTrack0();
+	if (r == DiagnosticResponse::drRewindFailure) {
+		messageOutput(true, "Unable to find track 0");
+		if (askQuestion(true,"Could you hear the drive head moving?")) {
+			messageOutput(true, "Please check the following PINS on the Arduino: 6, 8");
+		}
+		else {
+			messageOutput(true, "Please check the following PINS on the Arduino: 7");
+		}
+		return false;
+	}
+	else
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true, m_device.getLastErrorStr());
+		return false;
+	}
+
+	// Track 0 found.  Lets see if we can seek to track 70
+	messageOutput(false, "Track 0 was found.  Asking the Arduino to find Track 70");
+	r = m_device.selectTrack(70);
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true, m_device.getLastErrorStr());
+		return false;
+	}
+
+	if (!askQuestion(true,"Could you hear the head moving quite a distance?")) {
+        messageOutput(true, "As we successfully found track 0, please check the following PINS on the Arduino: 6, 7");
+		return false;
+	}
+
+	// So we can open the drive and move the head.  We're going to turn the drive off
+	r = m_device.enableReading(false, false);
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true, m_device.getLastErrorStr());
+		return false;
+	}
+
+	if (!askQuestion(false,"Please insert a write protected AmigaDOS disk in the drive")) {
+		messageOutput(true, "Diagnostics aborted");
+		return false;
+	}
+
+	messageOutput(false, "Starting drive, and seeking to track 40.");
+	// Re-open the drive
+	r = m_device.enableReading(true, true);
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true, m_device.getLastErrorStr());
+		return false;
+	}
+
+	// Goto 40, this is where the root block is, although we wont be decoding it
+	r = m_device.selectTrack(40);
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true, m_device.getLastErrorStr());
+		return false;
+	}
+
+	messageOutput(false, "Checking for INDEX pulse from drive");
+	r = m_device.testIndexPulse();
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true, m_device.getLastErrorStr());
+		messageOutput(true, "Please check that a disk is inserted and the following PINS on the Arduino: 2");
+		return false;
+	}
+
+	messageOutput(false, "Checking for DATA from drive");
+	r = m_device.testDataPulse();
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true, m_device.getLastErrorStr());
+		messageOutput(true, "Please check that a disk is inserted and following PINS on the Arduino: 4 (and the 1K resistor)");
+		return false;
+	}
+
+	r = m_device.selectSurface(ArduinoFloppyReader::DiskSurface::dsUpper);
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true, m_device.getLastErrorStr());
+		return false;
+	}
+
+	messageOutput(false, "Attempting to read a track from the UPPER side of the disk");
+	ArduinoFloppyReader::RawTrackData data;
+	int counter;
+	bool tracksFound = false;
+
+	for (int a = 0; a < 10; a++) {
+		r = m_device.readCurrentTrack(data, true);
+		if (r != DiagnosticResponse::drOK) {
+			messageOutput(true, m_device.getLastErrorStr());
+			return false;
+		}
+
+		// Data read.  See if any tracks were detected
+		DecodedTrack trk1;
+		findSectors(data, 40, ArduinoFloppyReader::DiskSurface::dsUpper, AMIGA_WORD_SYNC, trk1, true);
+		
+		counter=0; 
+		for (int sec=0; sec<NUM_SECTORS_PER_TRACK; sec++)
+			if (trk1.invalidSectors[sec].size()) counter++;
+
+		if (counter + trk1.validSectors.size() > 0) {
+			messageOutput(false, "Tracks found!");
+			tracksFound = true;
+			break;
+		}
+		// Nothing found?
+		DecodedTrack trk2;
+		findSectors(data, 40, ArduinoFloppyReader::DiskSurface::dsLower, AMIGA_WORD_SYNC, trk2, true);
+		
+		counter = 0;
+		for (int sec = 0; sec<NUM_SECTORS_PER_TRACK; sec++)
+			if (trk2.invalidSectors[sec].size()) counter++;
+
+		if (counter + trk2.validSectors.size() > 0) {
+			messageOutput(false, "Tracks found but on the wrong side.  Please check the following PINS on the Arduino: 9");
+			return false;
+		}
+		if (tracksFound) break;
+	}
+
+
+	messageOutput(false, "Attempting to read a track from the LOWER side of the disk");
+	r = m_device.selectSurface(ArduinoFloppyReader::DiskSurface::dsLower);
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true, m_device.getLastErrorStr());
+		return false;
+	}
+	tracksFound = false;
+
+	for (int a = 0; a < 10; a++) {
+		r = m_device.readCurrentTrack(data, true);
+		if (r != DiagnosticResponse::drOK) {
+			messageOutput(true, m_device.getLastErrorStr());
+			return false;
+		}
+
+		// Data read.  See if any tracks were detected
+		DecodedTrack trk1;
+		findSectors(data, 40, ArduinoFloppyReader::DiskSurface::dsLower, AMIGA_WORD_SYNC, trk1, true);
+
+		counter = 0;
+		for (int sec = 0; sec<NUM_SECTORS_PER_TRACK; sec++)
+			if (trk1.invalidSectors[sec].size()) counter++;
+
+		if (counter + trk1.validSectors.size() > 0) {
+			messageOutput(false, "Tracks found!");
+			tracksFound = true;
+			break;
+		}
+		// Nothing found?
+		DecodedTrack trk2;
+		findSectors(data, 40, ArduinoFloppyReader::DiskSurface::dsUpper, AMIGA_WORD_SYNC, trk2, true);
+
+		counter = 0;
+		for (int sec = 0; sec<NUM_SECTORS_PER_TRACK; sec++)
+			if (trk2.invalidSectors[sec].size()) counter++;
+
+		if (counter + trk2.validSectors.size() > 0) {
+			messageOutput(false, "Tracks found but on the wrong side.  Please check the following PINS on the Arduino: 9");
+			return false;
+		}
+		if (tracksFound) break;
+	}
+
+	messageOutput(false, "Reading was successful!");
+
+	// Turn the drive off again
+	r = m_device.enableReading(false,false);
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true, m_device.getLastErrorStr());
+		return false;
+	}
+
+	// Now ask.
+	if (!askQuestion(true,"Would you like to test writing to a disk?  (please ensure the disk inserted is not important as data will be erased)")) {
+		messageOutput(true, "Diagnostic aborted.");
+		return false;
+	}
+
+	// Try to enable the write head
+	do {
+		r = m_device.enableWriting(true, true);
+
+		if (r == DiagnosticResponse::drWriteProtected) {
+			if (!askQuestion(false,"Please write-enable the disk and try again.")) {
+				messageOutput(true, "Diagnostic aborted.");
+				return false;
+			}
+		} else
+		if (r != DiagnosticResponse::drOK) {
+			messageOutput(true, m_device.getLastErrorStr());
+			return false;
+		}
+
+	} while (r == DiagnosticResponse::drWriteProtected);
+	// Writing is enabled.
+	
+	// Goto 41, we'll write some stuff
+	r = m_device.selectTrack(41);
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true, m_device.getLastErrorStr());
+		return false;
+	}
+
+	// Upper side
+	r = m_device.selectSurface(ArduinoFloppyReader::DiskSurface::dsUpper);
+	if (r != DiagnosticResponse::drOK) {
+		messageOutput(true, m_device.getLastErrorStr());
+		return false;
+	}
+		
+	// We're gonna write a test track out
+
+	RawDecodedSector track[NUM_SECTORS_PER_TRACK];
+	FullDiskTrack  disktrack;
+	memset(disktrack.filler1, 0xAA, sizeof(disktrack.filler1));  // Pad with "0"s which as an MFM encoded byte is 0xAA
+	memset(disktrack.filler2, 0xAA, sizeof(disktrack.filler2));  // Pad with "0"s which as an MFM encoded byte is 0xAA
+
+	// Get length
+	int sequenceLength = strlen(TEST_BYTE_SEQUENCE);
+
+	for (unsigned int sector = 0; sector < NUM_SECTORS_PER_TRACK; sector++) {
+
+		// Invent some track data
+		for (int bytePos = 0; bytePos < SECTOR_BYTES; bytePos++)
+			track[sector][bytePos] = TEST_BYTE_SEQUENCE[(sector + bytePos) % sequenceLength];
+
+		encodeSector(41, ArduinoFloppyReader::DiskSurface::dsUpper, sector, track[sector], disktrack.sectors[sector]);
+	}
+
+	// Attempt to write 10 times, with verify
+	messageOutput(false, "Writing and Verifying Track 41 (Upper Side).");
+	bool writtenOK = false;
+	for (int a = 1; a <= 10; a++) {
+		
+		r = m_device.writeCurrentTrack((const unsigned char*)(&disktrack), sizeof(disktrack), false);
+		if (r != DiagnosticResponse::drOK) {
+			messageOutput(true, m_device.getLastErrorStr());
+			return false;
+		}
+		r = m_device.readCurrentTrack(data, false);
+		if (r != DiagnosticResponse::drOK) {
+			messageOutput(true, m_device.getLastErrorStr());
+			return false;
+		}
+
+		// Data read.  See if any tracks were detected
+		DecodedTrack trk;
+		findSectors(data, 41, ArduinoFloppyReader::DiskSurface::dsUpper, AMIGA_WORD_SYNC, trk, true);
+		// Have a look at any of the found sectors and see if any are valid and matched the phrase we wrote onto the disk
+		for (const DecodedSector& sec : trk.validSectors) {
+			// See if we can find the sequence in here somewhere 
+			std::string s;
+			s.resize(SECTOR_BYTES);
+			memcpy(&s[0], sec.data, SECTOR_BYTES);
+
+			if (s.find(TEST_BYTE_SEQUENCE) != std::string::npos) {
+				// Excellent
+				writtenOK = true;
+				break;
+			}					
+		}
+		if (!writtenOK) {
+			// See if we can find the sequence in one of the partial sectors
+			for (int sector = 0; sector < NUM_SECTORS_PER_TRACK; sector++) {
+				for (const DecodedSector& sec : trk.invalidSectors[sector]) {
+					// See if we can find the sequence in here somewhere 
+					std::string s;
+					s.resize(SECTOR_BYTES);
+					memcpy(&s[0], sec.data, SECTOR_BYTES);
+
+					if (s.find(TEST_BYTE_SEQUENCE) != std::string::npos) {
+						// Excellent
+						writtenOK = true;
+						break;
+					}
+				}
+				if (writtenOK) break;
+			}
+		}
+	}
+
+	// Final results
+	if (!writtenOK) {
+		messageOutput(true, "Unable to detect written track.  This could be for one of the following reasons:");
+		messageOutput(true, "1.  Please check the following PINS on the Arduino: 3, A0, A1");
+		messageOutput(true, "2.  Please check the Ardiono IDE config has not been modified from stock.  This was tested using 1.8.4, compiler settings may affect performance");
+		messageOutput(true, "3.  Check for poor connections, typically on a breadboard they may be intermittent which may pass the above results but still not work.");
+		messageOutput(true, "4.  Check for an electrically noisy environment.  It is possible that electronic noise (eg: from a cell phone) may cause errors reading and writing to the disk");
+		messageOutput(true, "5.  Shorten the floppy disk cable to help reduce noise.");
+		messageOutput(true, "6.  Ensure your power supply is strong enough to power the floppy drive.  Don't rely on the USB port for the 5V for the floppy drive!");
+		messageOutput(true, "7.  You can contact me for help, but some basic electronics diagnostics will help, checkout YouTube for guides.");
+
+		m_device.enableWriting(false);
+		return false;
+	}
+	else {
+		messageOutput(false, "Hurray! Writing was successful.  Your Arduino is ready for use! - Send us a photo!");
+		m_device.enableWriting(false);
+		return true;
+	}
+	
 }
 
 
@@ -507,10 +881,7 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool verify, std::f
 	if (!m_device.isOpen()) return ADFResult::adfrDriveError;
 
 	// Upgrade to writing mode
-	switch (m_device.enableWriting(true, true)) {
-		case InterfaceResult::irCommError: return ADFResult::adfrDriveError;
-		case InterfaceResult::irError: return ADFResult::adfrDiskWriteProtected;
-	}
+	if (m_device.enableWriting(true, true)!=DiagnosticResponse::drOK) return ADFResult::adfrDriveError;
 
 	// Attempt to open the file
 	HANDLE hADFFile = CreateFile(inputFile.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0);
@@ -535,14 +906,14 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool verify, std::f
 		if (bytesRead != ADF_TRACK_SIZE) break;
 
 		// Select the track we're working on
-		if (m_device.selectTrack(currentTrack)!= InterfaceResult::irOK) {
+		if (m_device.selectTrack(currentTrack)!= DiagnosticResponse::drOK) {
 			CloseHandle(hADFFile);
 			return ADFResult::adfrDriveError;
 		}
 
 		DiskSurface surface = (surfaceIndex == 1) ? DiskSurface::dsUpper : DiskSurface::dsLower;
 		// Change the surface we're targeting
-		if (m_device.selectSurface(surface) != InterfaceResult::irOK) {
+		if (m_device.selectSurface(surface) != DiagnosticResponse::drOK) {
 			CloseHandle(hADFFile);
 			return ADFResult::adfrDriveError;
 		}
@@ -566,17 +937,18 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool verify, std::f
 		int failCount = 0;
 		while ((verify) && (trackRead.validSectors.size()<NUM_SECTORS_PER_TRACK)) {
 			switch (m_device.writeCurrentTrack((const unsigned char*)(&disktrack), sizeof(disktrack), false)) {
-			case InterfaceResult::irError: CloseHandle(hADFFile);
-				return ADFResult::adfrDiskWriteProtected;
-			case InterfaceResult::irCommError: CloseHandle(hADFFile);
-				return ADFResult::adfrDriveError;
+			case DiagnosticResponse::drWriteProtected: CloseHandle(hADFFile);
+							return ADFResult::adfrDiskWriteProtected;
+			case DiagnosticResponse::drOK: break;
+			default: CloseHandle(hADFFile);
+					 return ADFResult::adfrDriveError;
 			}
 
 			if (verify) {				
 				for (int retries=0; retries<5; retries++) {
 					RawTrackData data;
 					// Read the track back
-					if (m_device.readCurrentTrack(data, false) == InterfaceResult::irOK) {								
+					if (m_device.readCurrentTrack(data, false) == DiagnosticResponse::drOK) {
 						// Find hopefully all sectors
 						findSectors(data, currentTrack, surface, AMIGA_WORD_SYNC, trackRead, false);
 					}
@@ -660,7 +1032,7 @@ ADFResult ADFWriter::DiskToADF(const std::wstring outputFile, const unsigned int
 	for (unsigned int currentTrack = 0; currentTrack < numTracks; currentTrack++) {
 
 		// Select the track we're working on
-		if (m_device.selectTrack(currentTrack) != InterfaceResult::irOK) {
+		if (m_device.selectTrack(currentTrack) != DiagnosticResponse::drOK) {
 			CloseHandle(hADFFile);
 			return ADFResult::adfrCompletedWithErrors;
 		}
@@ -671,7 +1043,7 @@ ADFResult ADFWriter::DiskToADF(const std::wstring outputFile, const unsigned int
 			const DiskSurface surface = (surfaceIndex == 1) ? DiskSurface::dsUpper : DiskSurface::dsLower;
 
 			// Change the surface we're looking at
-			if (m_device.selectSurface(surface) != InterfaceResult::irOK) {
+			if (m_device.selectSurface(surface) != DiagnosticResponse::drOK) {
 				CloseHandle(hADFFile);
 				return ADFResult::adfrCompletedWithErrors;
 			}
@@ -724,7 +1096,7 @@ ADFResult ADFWriter::DiskToADF(const std::wstring outputFile, const unsigned int
 				}
 
 				// Read and process
-				if (m_device.readCurrentTrack(data, false) == InterfaceResult::irOK) {
+				if (m_device.readCurrentTrack(data, false) == DiagnosticResponse::drOK) {
 					findSectors(data, currentTrack, surface, AMIGA_WORD_SYNC, track, ignoreChecksums);
 					failureTotal++;
 				}

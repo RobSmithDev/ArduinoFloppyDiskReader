@@ -1,6 +1,6 @@
 /* ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2018 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk
 *
 * This library is free software; you can redistribute it and/or
@@ -77,12 +77,18 @@ namespace ArduinoFloppyReader {
 		// Close the device when we've finished
 		void closeDevice();
 
+		std::string getLastError() { return m_device.getLastErrorStr(); };
+
 		// Reads the disk and write the data to the ADF file supplied.  The callback is for progress, and you can returns FALSE to abort the process
 		// numTracks is the number of tracks to read.  Usually 80 (0..79), sometimes track 80 and 81 are needed
 		ADFResult DiskToADF(const std::wstring outputFile, const unsigned int numTracks, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound)> callback);
 
 		// Writes an ADF file back to a floppy disk.  Return FALSE in the callback to abort this operation.  If verify is set then the track isread back and and sector checksums are checked for 11 valid sectors
 		ADFResult ADFToDisk(const std::wstring inputFile, bool verify, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError) > callback);
+	
+		// Run diagnostics on the system.  You do not need to call openDevice first.  Return TURE if everything passed
+		bool runDiagnostics(const unsigned int comPort, std::function<void(bool isError, const std::string message)> messageOutput, std::function<bool(bool isQuestion, const std::string question)> askQuestion);
+		
 	};
 
 

@@ -1,6 +1,6 @@
 /* ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2018 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk
 *
 * This sketch is free software; you can redistribute it and/or
@@ -173,7 +173,7 @@ void setup() {
     pinMode(PIN_DETECT_TRACK_0, INPUT_PULLUP);
     pinMode(PIN_READ_DATA,INPUT_PULLUP);
 
-    pinMode(PIN_INDEX_DETECTED,INPUT);
+    pinMode(PIN_INDEX_DETECTED,INPUT_PULLUP);
 
     // Prepre the pin inputs and outputs
     pinMode(PIN_DRIVE_ENABLE_MOTOR, OUTPUT);
@@ -201,12 +201,91 @@ void setup() {
     prepSerialInterface();
 }
 
+// Run a diagnostics test command
+void runDiagnostic() {
+    // See what test to run
+    byte test = readByteFromUART();
+
+    switch (test) {
+        case '1':  // Turn off CTS
+            PIN_CTS_PORT &= (~PIN_CTS_MASK);   
+            writeByteToUART('1');
+            readByteFromUART();
+            writeByteToUART('1');
+            break;
+
+        case '2':  // Turn on CTS
+            PIN_CTS_PORT|=PIN_CTS_MASK;   
+            writeByteToUART('1');
+            readByteFromUART();
+            writeByteToUART('1');
+            break;
+
+        case '3':  // Index pulse test (with timeout)
+            {
+               bool state1 = false;
+               bool state2 = false;
+
+               // At the 300 RPM (5 turns per second) this runs at, this loop needs to run a few times to check for index pulses.  This runs for approx 1 second
+               for (unsigned int b=0; b<20; b++) {
+                 for (unsigned int a=0; a<60000; a++) {
+                     if (PIN_INDEX_PORT & PIN_INDEX_MASK) state1=true; else state2=true;
+                     if (state1&&state2) break;
+                 }
+                 if (state1&&state2) break;
+               }
+
+               if (state1&&state2) {
+                   writeByteToUART('1');
+               } else {
+                   writeByteToUART('0');
+               }
+            }
+            break;   
+
+        case '4':  // Data pulse test (with timeout)
+            {
+               bool state1 = false;
+               bool state2 = false;
+
+              for (unsigned int b=0; b<20; b++) {
+                 for (unsigned int a=0; a<60000; a++) {
+                      if (PIN_READ_DATA_PORT & PIN_READ_DATA_MASK) state1=true; else state2=true;
+                      if (state1&&state2) break;
+                  }
+
+                  if (state1&&state2) break;
+              }
+
+              if (state1&&state2) {
+                  writeByteToUART('1');
+              } else {
+                  writeByteToUART('0');
+              }
+            }
+            break;                         
+              
+      default:
+        writeByteToUART('0');
+        break;
+    }
+}
+
 // Rewinds the head back to Track 0
-void goToTrack0() {
+bool goToTrack0() {
     digitalWrite(PIN_MOTOR_DIR,MOTOR_TRACK_DECREASE);   // Set the direction to go backwards
-    while (digitalRead(PIN_DETECT_TRACK_0) != LOW) stepDirectionHead();   // Keep moving the head until we see the TRACK 0 detection pin
+    int counter=0;
+    while (digitalRead(PIN_DETECT_TRACK_0) != LOW) {
+       stepDirectionHead();   // Keep moving the head until we see the TRACK 0 detection pin
+       counter++;
+       // If this happens we;ve steps twice as many as needed and still havent found track 0
+       if (counter>170) {
+          return false;
+       }
+    }
     
     currentTrack = 0;    // Reset the track number
+    return true;
 }
 
 // Goto a specific track.  During testing it was easier for the track number to be supplied as two ASCII characters, so I left it like this
@@ -328,7 +407,7 @@ void writeTrackFromUART() {
     // Reset the counter, ready for writing
     TCNT2=0;  
     
-    // Loop them bytes
+    // Loop them bytes - ideally I wanted to use an ISR here, but theres just too much overhead even with naked ISRs to do this (with preserving registers etc)
     for (register unsigned int a=0; a<numBytes; a++) {
         // Should never happen, but we'll wait here if theres no data 
         if (serialBytesInUse<1) {
@@ -343,24 +422,26 @@ void writeTrackFromUART() {
         // Read a buye from the buffer
         currentByte = SERIAL_BUFFER[serialReadPos++]; 
         serialBytesInUse--;
-        
 
+        
+        // Theres a small possability, looking at the decompiled ASM (and less likely even with these few extra instructions) we actually might get back here before the TCNT2 overflows back to zero causing this to write early
+        while (TCNT2>=240) {}
         // Now we write the data.  Hopefully by the time we get back to the top everything is ready again
-        WRITE_BIT(16,B10000000);
+        WRITE_BIT(0x10,B10000000);
         CHECK_SERIAL();
-        WRITE_BIT(48,B01000000);
+        WRITE_BIT(0x30,B01000000);
         CHECK_SERIAL();
-        WRITE_BIT(80,B00100000);
+        WRITE_BIT(0x50,B00100000);
         CHECK_SERIAL();
-        WRITE_BIT(112,B00010000);
+        WRITE_BIT(0x70,B00010000);
         CHECK_SERIAL();
-        WRITE_BIT(144,B00001000);
+        WRITE_BIT(0x90,B00001000);
         CHECK_SERIAL();
-        WRITE_BIT(176,B00000100);
+        WRITE_BIT(0xB0,B00000100);
         CHECK_SERIAL();
-        WRITE_BIT(208,B00000010);
+        WRITE_BIT(0xD0,B00000010);
         CHECK_SERIAL();
-        WRITE_BIT(240,B00000001);
+        WRITE_BIT(0xF0,B00000001);
     }  
     PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;
 
@@ -445,13 +526,14 @@ void loop() {
                  writeByteToUART('V');  // Followed
                  writeByteToUART('1');  // By
                  writeByteToUART('.');  // Version
-                 writeByteToUART('1');  // Number
+                 writeByteToUART('2');  // Number
                  break;
   
         // Command "." means go back to track 0
         case '.': if (!driveEnabled) writeByteToUART('0'); else {
-                   goToTrack0();    // reset 
-                   writeByteToUART('1');
+                   if (goToTrack0())    // reset 
+                      writeByteToUART('1');
+                   else writeByteToUART('#');
                  }  
                  break;
   
@@ -546,6 +628,9 @@ void loop() {
                      writeByteToUART('1');
                   }                
                   break;
+
+           case '&': runDiagnostic();
+                     break;
   
   
       // We don't recognise the command!

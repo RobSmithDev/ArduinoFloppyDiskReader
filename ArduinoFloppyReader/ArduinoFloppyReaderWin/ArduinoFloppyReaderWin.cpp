@@ -1,6 +1,6 @@
 /* ArduinoFloppyReaderWin
 *
-* Copyright (C) 2017 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2018 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk
 *
 * This program is free software; you can redistribute it and/or
@@ -23,6 +23,7 @@
 
 
 #include "stdafx.h"
+#include "afxwin.h"
 #include "ArduinoFloppyReaderWin.h"
 #include "ArduinoFloppyReaderWinDlg.h"
 

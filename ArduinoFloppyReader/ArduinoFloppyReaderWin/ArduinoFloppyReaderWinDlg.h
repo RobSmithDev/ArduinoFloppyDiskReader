@@ -1,6 +1,6 @@
 /* ArduinoFloppyReaderWin
 *
-* Copyright (C) 2017 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2018 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk
 *
 * This program is free software; you can redistribute it and/or
@@ -89,4 +89,6 @@ public:
 	afx_msg void OnBnClickedBrowse2();
 	afx_msg void OnBnClickedStartstop2();
 	void saveComPort();
+	afx_msg void OnBnClickedStartstop3();
+	CButton m_diagnostics;
 };
