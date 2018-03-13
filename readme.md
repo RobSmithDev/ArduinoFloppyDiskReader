@@ -11,6 +11,9 @@ This Visual Studio 2017 project contains two applications, a command line, and a
 # FloppyDriverController.sketch
 This is the Ardunio source code/sketch
 
+# AVR Firmware
+If you want to use the AVR directly instead of within the Arduino environment, then jump to [https://github.com/jtsiomb/usbamigafloppy] where John Tsiombikas has ported the code.
+
 # Help and Instructions 
 For further details including how to wire this up please visit [http://amiga.robsmithdev.co.uk]
 
@@ -18,3 +21,6 @@ For further details including how to wire this up please visit [http://amiga.rob
 V2.1 Diagnostics and potential write bug fixed
 V2.0 Disk reading has been vastly improved and you can now also write disks!
 V1.0 Initial release, can read disks fairly well
+
+# Licence
+This entire project is available under the GNU General Public License v3 licence.  See licence.txt for more details.
