@@ -37,7 +37,7 @@ void adf2Disk(wchar_t* argv[], bool verify) {
 	printf("\nWrite disk from ADF mode\n\n");
 	if (!verify) printf("WARNING: It is STRONGLY recommended to write with verify support turned on.\r\n\r\n");
 
-	ADFResult result = writer.ADFToDisk(argv[2],verify, [](const int currentTrack, const DiskSurface currentSide, bool isVerifyError) ->WriteResponse {
+	ADFResult result = writer.ADFToDisk(argv[2],true, verify, [](const int currentTrack, const DiskSurface currentSide, bool isVerifyError) ->WriteResponse {
 		if (isVerifyError) {
 			char input;
 			do {

@@ -91,4 +91,5 @@ public:
 	void saveComPort();
 	afx_msg void OnBnClickedStartstop3();
 	CButton m_diagnostics;
+	CButton m_erase;
 };

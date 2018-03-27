@@ -44,6 +44,7 @@ using namespace ArduinoFloppyReader;
 #define COMMAND_DISABLE            '-'
 #define COMMAND_WRITETRACK         '>'
 #define COMMAND_ENABLEWRITE        '~'
+#define COMMAND_ERASETRACK         'X'
 #define COMMAND_DIAGNOSTICS        '&'
 
 
@@ -61,6 +62,7 @@ std::string lastCommandToName(LastCommand cmd) {
 	case lcReadTrack:		return "ReadTrack";
 	case lcWriteTrack:		return "WriteTrack";
 	case lcRunDiagnostics:	return "RunDiagnostics";
+	case lcEraseTrack:		return "EraseTrack";
 	default:				return "Unknown";
 	}
 }
@@ -577,6 +579,50 @@ DiagnosticResponse ArduinoInterface::readCurrentTrack(RawTrackData& trackData, c
 		}
 	}
 	unpack(tmp, trackData);
+	m_lastError = DiagnosticResponse::drOK;
+	return m_lastError;
+}
+
+// Asks the Arduino to wipe the current track
+DiagnosticResponse ArduinoInterface::eraseCurrentTrack() {
+	m_lastError = runCommand(COMMAND_ERASETRACK);
+	if (m_lastError != DiagnosticResponse::drOK) {
+		m_lastCommand = lcEraseTrack;
+		return m_lastError;
+	}
+
+	unsigned char chr;
+	if (!deviceRead(&chr, 1)) {
+		m_lastCommand = lcEraseTrack;
+		m_lastError = DiagnosticResponse::drReadResponseFailed;
+		return m_lastError;
+	}
+
+	// 'N' means NO Writing, aka write protected
+	if (chr == 'N') {
+		m_lastCommand = lcEraseTrack;
+		m_lastError = DiagnosticResponse::drWriteProtected;
+		return m_lastError;
+	}
+	if (chr != 'Y') {
+		m_lastCommand = lcEraseTrack;
+		m_lastError = DiagnosticResponse::drStatusError;
+		return m_lastError;
+	}
+
+	unsigned char response;
+	if (!deviceRead(&response, 1)) {
+		m_lastCommand = lcEraseTrack;
+		m_lastError = DiagnosticResponse::drReadResponseFailed;
+		return m_lastError;
+	}
+	// If this is a '1' then the Arduino erased the track
+	if (response != '1') {
+		m_lastCommand = lcEraseTrack;
+		m_lastError = DiagnosticResponse::drStatusError;
+		return m_lastError;
+	}
+
 	m_lastError = DiagnosticResponse::drOK;
 	return m_lastError;
 }

@@ -18,6 +18,7 @@ If you want to use the AVR directly instead of within the Arduino environment, t
 For further details including how to wire this up please visit [http://amiga.robsmithdev.co.uk]
 
 # Whats changed?
+V2.2 Fixed 99% of checksum errors when writing by erasing the track first
 V2.1 Diagnostics and potential write bug fixed
 V2.0 Disk reading has been vastly improved and you can now also write disks!
 V1.0 Initial release, can read disks fairly well

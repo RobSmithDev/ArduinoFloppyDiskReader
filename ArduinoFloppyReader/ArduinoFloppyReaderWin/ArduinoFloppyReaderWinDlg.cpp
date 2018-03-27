@@ -279,6 +279,7 @@ void CArduinoFloppyReaderWinDlg::DoDataExchange(CDataExchange* pDX)
 	DDX_Control(pDX, IDC_STARTSTOP2, m_writeButton);
 	DDX_Control(pDX, IDC_CHECK1, m_verify);
 	DDX_Control(pDX, IDC_STARTSTOP3, m_diagnostics);
+	DDX_Control(pDX, IDC_ERASE, m_erase);
 }
 
 BEGIN_MESSAGE_MAP(CArduinoFloppyReaderWinDlg, CDialogEx)
@@ -351,6 +352,7 @@ BOOL CArduinoFloppyReaderWinDlg::OnInitDialog()
 	}
 	m_spinner.SetRange(1, 999);
 	m_verify.SetCheck(TRUE);
+	m_erase.SetCheck(TRUE);
 
 	return TRUE;  // return TRUE  unless you set the focus to a control
 }
@@ -509,7 +511,7 @@ bool CArduinoFloppyReaderWinDlg::runThreadWrite() {
 
 	m_inputADF.GetWindowText(filename);
 	
-	ArduinoFloppyReader::ADFResult readerResult = writer.ADFToDisk(filename.GetBuffer(), m_verify.GetCheck()!=0,
+	ArduinoFloppyReader::ADFResult readerResult = writer.ADFToDisk(filename.GetBuffer(), m_erase.GetCheck()!=0, m_verify.GetCheck()!=0,
 		[this](const int currentTrack, const ArduinoFloppyReader::DiskSurface currentSide, const bool isVerifyError) -> ArduinoFloppyReader::WriteResponse {
 
 		if (m_cancelButtonPressed) return ArduinoFloppyReader::WriteResponse::wrAbort;
@@ -570,6 +572,7 @@ void CArduinoFloppyReaderWinDlg::enableDialog(bool enable) {
 	m_inputADF.EnableWindow(enable);
 	m_comport.EnableWindow(enable);
 	m_verify.EnableWindow(enable);
+	m_erase.EnableWindow(enable);
 	m_diagnostics.EnableWindow(enable);
 
 	if (enable) {

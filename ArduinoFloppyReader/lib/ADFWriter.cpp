@@ -52,7 +52,6 @@ using namespace ArduinoFloppyReader;
 #define NUM_SECTORS_PER_TRACK 11						 // Number of sectors per track
 #define RAW_SECTOR_SIZE (8+56+SECTOR_BYTES+SECTOR_BYTES)      // Size of a sector, *Including* the sector sync word longs
 #define ADF_TRACK_SIZE (SECTOR_BYTES*NUM_SECTORS_PER_TRACK)   // Bytes required for a single track
-#define TRACK_FILLER_SIZE 256                                 // Theritically this would be 532 bytes, but if the disk spins slower or fast this would be wrong
 
 
 const char* TEST_BYTE_SEQUENCE = "amiga.robsmithdev.co.uk";
@@ -67,7 +66,7 @@ typedef struct alignas(8) {
 	// Raw sector data
 	RawEncodedSector sectors[NUM_SECTORS_PER_TRACK];
 	// Blank "Filler" gap content. (this may get overwritten by the sectors a little)
-	unsigned char filler2[TRACK_FILLER_SIZE];
+	unsigned char filler2[8];
 } FullDiskTrack;
 
 // Structure to hold data while we decode it
@@ -877,7 +876,7 @@ bool ADFWriter::runDiagnostics(const unsigned int comPort, std::function<void(bo
 
 
 // Writes an ADF file back to a floppy disk.  Return FALSE in the callback to abort this operation 
-ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool verify, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError) > callback) {
+ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool eraseFirst, bool verify, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError) > callback) {
 	if (!m_device.isOpen()) return ADFResult::adfrDriveError;
 
 	// Upgrade to writing mode
@@ -935,7 +934,13 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool verify, std::f
 		for (unsigned int a = 0; a < NUM_SECTORS_PER_TRACK; a++) trackRead.invalidSectors[a].clear();
 
 		int failCount = 0;
-		while ((verify) && (trackRead.validSectors.size()<NUM_SECTORS_PER_TRACK)) {
+		while (trackRead.validSectors.size()<NUM_SECTORS_PER_TRACK) {
+
+			if (eraseFirst) {
+				if (m_device.eraseCurrentTrack() != DiagnosticResponse::drOK)
+					return adfrDriveError;
+			}
+
 			switch (m_device.writeCurrentTrack((const unsigned char*)(&disktrack), sizeof(disktrack), false)) {
 			case DiagnosticResponse::drWriteProtected: CloseHandle(hADFFile);
 							return ADFResult::adfrDiskWriteProtected;
@@ -996,6 +1001,7 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool verify, std::f
 					}
 				}
 			}
+			else break;
 		}
 
 

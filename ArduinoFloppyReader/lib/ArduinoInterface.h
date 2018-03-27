@@ -107,6 +107,7 @@ namespace ArduinoFloppyReader {
 		lcSelectSurface,
 		lcReadTrack,
 		lcWriteTrack,
+		lcEraseTrack,
 		lcRunDiagnostics
 	};
 
@@ -175,6 +176,9 @@ namespace ArduinoFloppyReader {
 
 		// Attempts to write a sector back to the disk.  This must be pre-formatted and MFM encoded correctly
 		DiagnosticResponse  writeCurrentTrack(const unsigned char*, const unsigned short numBytes, const bool writeFromIndexPulse);
+
+		// Asks the Arduino to wipe the current track, filling it with the 0xAA pattern
+		DiagnosticResponse eraseCurrentTrack();
 
 		// Check CTS status 
 		DiagnosticResponse testCTS(const unsigned int portNumber);

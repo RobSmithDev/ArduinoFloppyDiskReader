@@ -84,7 +84,7 @@ namespace ArduinoFloppyReader {
 		ADFResult DiskToADF(const std::wstring outputFile, const unsigned int numTracks, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound)> callback);
 
 		// Writes an ADF file back to a floppy disk.  Return FALSE in the callback to abort this operation.  If verify is set then the track isread back and and sector checksums are checked for 11 valid sectors
-		ADFResult ADFToDisk(const std::wstring inputFile, bool verify, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError) > callback);
+		ADFResult ADFToDisk(const std::wstring inputFile, bool eraseFirst, bool verify, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError) > callback);
 	
 		// Run diagnostics on the system.  You do not need to call openDevice first.  Return TURE if everything passed
 		bool runDiagnostics(const unsigned int comPort, std::function<void(bool isError, const std::string message)> messageOutput, std::function<bool(bool isQuestion, const std::string question)> askQuestion);

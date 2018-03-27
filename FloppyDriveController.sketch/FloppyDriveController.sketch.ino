@@ -424,8 +424,9 @@ void writeTrackFromUART() {
         serialBytesInUse--;
 
         
-        // Theres a small possability, looking at the decompiled ASM (and less likely even with these few extra instructions) we actually might get back here before the TCNT2 overflows back to zero causing this to write early
+        // Theres a small possibility, looking at the decompiled ASM (and less likely even with these few extra instructions) we actually might get back here before the TCNT2 overflows back to zero causing this to write early
         while (TCNT2>=240) {}
+		
         // Now we write the data.  Hopefully by the time we get back to the top everything is ready again
         WRITE_BIT(0x10,B10000000);
         CHECK_SERIAL();
@@ -443,6 +444,59 @@ void writeTrackFromUART() {
         CHECK_SERIAL();
         WRITE_BIT(0xF0,B00000001);
     }  
+	
+	// Turn off the write head
+    PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;
+
+    // Done!
+    writeByteToUART('1');
+    digitalWrite(PIN_ACTIVITY_LED,LOW);
+    
+    // Disable the 500khz signal
+    TCCR2B = 0;   // No Clock (turn off)    
+}
+
+
+
+
+// Write a track to disk from the UART - the data should be pre-MFM encoded raw track data where '1's are the pulses/phase reversals to trigger
+void eraseTrack() {
+    // Configure timer 2 just as a counter in NORMAL mode
+    TCCR2A = 0 ;              // No physical output port pins and normal operation
+    TCCR2B = bit(CS20);       // Precale = 1  
+    
+    // Check if its write protected.  You can only do this after the write gate has been pulled low
+    if (digitalRead(PIN_WRITE_PROTECTED) == LOW) {
+        writeByteToUART('N'); 
+        digitalWrite(PIN_WRITE_GATE,HIGH);
+        return;
+    } else writeByteToUART('Y');
+    
+    register unsigned char currentByte;
+
+    digitalWrite(PIN_ACTIVITY_LED,HIGH);
+   
+    // Enable writing
+    PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
+
+    // Reset the counter, ready for writing
+    TCNT2=0;  
+    currentByte = 0xAA;
+
+    // Write complete blank track - at 300rpm, 500kbps, a track takes approx 1/5 second to write.  This is roughly 12500 bytes.  Our RAW read is 13888 bytes, so we'll use that just to make sure we get every last bit.
+    for (register unsigned int counter=0; counter<RAW_TRACKDATA_LENGTH; counter++) {
+        WRITE_BIT(0x10,B10000000);
+        WRITE_BIT(0x30,B01000000);
+        WRITE_BIT(0x50,B00100000);
+        WRITE_BIT(0x70,B00010000);
+        WRITE_BIT(0x90,B00001000);
+        WRITE_BIT(0xB0,B00000100);
+        WRITE_BIT(0xD0,B00000010);
+        WRITE_BIT(0xF0,B00000001);
+        while (TCNT2>=240) {}
+    }  
+  
+    // Turn off the write head
     PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;
 
     // Done!
@@ -526,7 +580,7 @@ void loop() {
                  writeByteToUART('V');  // Followed
                  writeByteToUART('1');  // By
                  writeByteToUART('.');  // Version
-                 writeByteToUART('2');  // Number
+                 writeByteToUART('3');  // Number
                  break;
   
         // Command "." means go back to track 0
@@ -572,6 +626,14 @@ void loop() {
                   if (!inWriteMode) writeByteToUART('0'); else {
                      writeByteToUART('1');
                      writeTrackFromUART();
+                  }
+                  break;
+
+        // Command "X" Erase current track (writes 0xAA to it)
+        case 'X': if (!driveEnabled) writeByteToUART('0'); else
+                  if (!inWriteMode) writeByteToUART('0'); else {
+                     writeByteToUART('1');
+                     eraseTrack();
                   }
                   break;
   
