@@ -78,10 +78,19 @@
 
 
 
-// Paula on the Amiga used to find the SYNC WORDS and then read 0x1900 further WORDS.  A dos track is 11968 bytes in size, theritical revolution is 12800 bytes. 
-#define RAW_TRACKDATA_LENGTH   (0x1900*2+0x440)         // Paula assumed it was 12868 bytes, so we read that, plus thre size of a sectors
+// Paula on the Amiga used to find the SYNC WORDS and then read 0x1900 further WORDS.  
+// A dos track is 11968 bytes in size, theritical revolution is 12800 bytes. 
+/* The ATARI ST could format a track with up to 11 Sectors, so the AMIGA settings are OK. */
+#define RAW_TRACKDATA_LENGTH   (0x1900*2+0x440)  // Paula assumed it was 12868 bytes, so we read that, plus the size of a sector, to find overlap
 
-// The current track that the head is over
+/* For the HD (1.4 MBytes) Disks the amount of data should be about 26688: */
+#define RAW_HD_TRACKDATA_LENGTH   (0x1900*2*2+0x440)
+
+
+/* The current track that the head is over 
+   (at the beginning this would be unknown and so a 
+   seek to Track0 should be done first. 
+ */
 int currentTrack = 0;
 
 // If the drive has been switched on or not
@@ -91,6 +100,9 @@ bool driveEnabled  = 0;
 bool inWriteMode = 0;
 
 
+/* Where there should be a HD Disk been read (1) or a DD and SD Disk (0).*/
+
+bool disktypeHD = 0;
 
 
 
@@ -110,6 +122,13 @@ void stepDirectionHead() {
     smalldelay(5);
     digitalWrite(PIN_MOTOR_STEP,LOW);
     smalldelay(5);
+    digitalWrite(PIN_MOTOR_STEP,HIGH);
+}
+// Step the head once.  Do it a bit faster...
+void stepDirectionHead_fast() {
+    smalldelay(4);
+    digitalWrite(PIN_MOTOR_STEP,LOW);
+    smalldelay(3);
     digitalWrite(PIN_MOTOR_STEP,HIGH);
 }
 
@@ -276,7 +295,7 @@ bool goToTrack0() {
     digitalWrite(PIN_MOTOR_DIR,MOTOR_TRACK_DECREASE);   // Set the direction to go backwards
     int counter=0;
     while (digitalRead(PIN_DETECT_TRACK_0) != LOW) {
-       stepDirectionHead();   // Keep moving the head until we see the TRACK 0 detection pin
+       stepDirectionHead_fast();   // Keep moving the head until we see the TRACK 0 detection pin
        counter++;
        // If this happens we;ve steps twice as many as needed and still havent found track 0
        if (counter>170) {
@@ -288,7 +307,7 @@ bool goToTrack0() {
     return true;
 }
 
-// Goto a specific track.  During testing it was easier for the track number to be supplied as two ASCII characters, so I left it like this
+// Goto to a specific track.  During testing it was easier for the track number to be supplied as two ASCII characters, so I left it like this
 bool gotoTrackX() {
     // Read the bytes
     byte track1 = readByteFromUART();
@@ -562,7 +581,167 @@ void readTrackDataFast() {
     TCCR2B = 0;      // No Clock (turn off)    
 }
 
+// Read the track for a HD disk
+void readTrackDataFast_HD() {
+    // Configure timer 2 just as a counter in NORMAL mode
+    TCCR2A = 0 ;              // No physical output port pins and normal operation
+    TCCR2B = bit(CS20);       // Precale = 1  
+    
+    // First wait for the serial port to be available
+    while(!(UCSR0A & (1<<UDRE0)));   
+   
+    // Signal we're active
+    digitalWrite(PIN_ACTIVITY_LED,HIGH);
 
+    // Force data to be stored in a register
+    register unsigned char DataOutputByte = 0;
+
+    // While the INDEX pin is high wait if the other end requires us to
+    if (readByteFromUART())
+        while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
+
+    // Prepare the two counter values as follows:
+    TCNT2=0;       // Reset the counter
+
+    register unsigned char counter;
+    long totalBits=0;
+    long target = ((long)RAW_HD_TRACKDATA_LENGTH)*(long)8;
+
+    while (totalBits<target) {
+        for (register unsigned char bits=0; bits<4; bits++) {
+            // Wait while pin is high
+            
+            while (PIN_READ_DATA_PORT & PIN_READ_DATA_MASK) {};
+            counter = TCNT2, TCNT2 = 0;  // reset - must be done with a COMMA
+           
+            DataOutputByte<<=2;   
+
+            // DO NOT USE BRACES HERE, use the "," or the optomiser messes it up
+            if (counter<40) DataOutputByte|=B00000001,totalBits+=2; else    // this accounts for just a '1' or a '01' as two '1' arent allowed in a row
+            if (counter>55) DataOutputByte|=B00000011,totalBits+=4; else DataOutputByte|=B00000010,totalBits+=3;
+            
+            // Wait until pin is high again
+            while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};
+        }
+        UDR0 = DataOutputByte;
+    }
+    // Because of the above rules the actual valid two-bit sequences output are 01, 10 and 11, so we use 00 to say "END OF DATA"
+    writeByteToUART(0);
+
+    // turn off the status LED
+    digitalWrite(PIN_ACTIVITY_LED,LOW);
+
+    // Disable the counter
+    TCCR2B = 0;      // No Clock (turn off)    
+}
+
+static char *i2a(unsigned int i, char *a, unsigned r) {
+  if(i/r>0) a=i2a(i/r,a,r);
+  *a = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz@$!?"[i % r];
+  return a+1;
+}
+
+/* Make a statistics of the data seen on a track to determine the density of the media */
+
+void measureTrackData() {
+   /* for the statistics */
+    int t1=0;
+    int t2=0;
+    int t3=0;
+    int t4=0;
+    int t5=0;
+    int t6=0;
+    // Configure timer 2 just as a counter in NORMAL mode
+    TCCR2A = 0 ;              // No physical output port pins and normal operation
+    TCCR2B = bit(CS20);       // Precale = 1  
+       
+    // Signal we're active
+    digitalWrite(PIN_ACTIVITY_LED,HIGH);
+
+    // Force data to be stored in a register
+    register unsigned char DataOutputByte = 0;
+
+    // While the INDEX pin is high wait 
+    while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
+
+    // Prepare the two counter values as follows:
+    TCNT2=0;       // Reset the counter
+
+    register unsigned char counter;
+    long totalBits=0;
+    long target = ((long)RAW_TRACKDATA_LENGTH)*(long)8;
+
+    while (totalBits<target) {
+        for (register unsigned char bits=0; bits<4; bits++) {
+            // Wait while pin is high
+            
+            while (PIN_READ_DATA_PORT & PIN_READ_DATA_MASK) {};
+            counter = TCNT2, TCNT2 = 0;  // reset - must be done with a COMMA
+           
+            DataOutputByte<<=2;   
+
+            // DO NOT USE BRACES HERE, use the "," or the optomiser messes it up
+	    
+            if      (counter<40) t1++;    
+            else if (counter<55) t2++;
+	    else t3++;
+	       
+            if (counter<80) t4++; 
+            else if (counter<112) t5++; 
+            else t6++; 
+	    
+	    totalBits+=2;
+            
+            // Wait until pin is high again
+            while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};
+        }
+    }
+
+    // turn off the status LED
+    digitalWrite(PIN_ACTIVITY_LED,LOW);
+
+    // Disable the counter
+    TCCR2B = 0;      // No Clock (turn off)
+    
+    /* Now output the result: */
+    char a[8];
+    *i2a(t1,a,16)=0;
+    writeByteToUART(a[0]);   
+    writeByteToUART(a[2]);   
+    writeByteToUART(a[3]);   
+    writeByteToUART(a[4]);
+    writeByteToUART(10);
+    *i2a(t2,a,16)=0;
+    writeByteToUART(a[0]);   
+    writeByteToUART(a[2]);   
+    writeByteToUART(a[3]);   
+    writeByteToUART(a[4]);
+    writeByteToUART(10);
+    *i2a(t3,a,16)=0;
+    writeByteToUART(a[0]);   
+    writeByteToUART(a[2]);   
+    writeByteToUART(a[3]);   
+    writeByteToUART(a[4]);
+    writeByteToUART(10);
+    *i2a(t4,a,16)=0;
+    writeByteToUART(a[0]);   
+    writeByteToUART(a[2]);   
+    writeByteToUART(a[3]);   
+    writeByteToUART(a[4]);
+    writeByteToUART(10);
+    *i2a(t5,a,16)=0;
+    writeByteToUART(a[0]);   
+    writeByteToUART(a[2]);   
+    writeByteToUART(a[3]);   
+    writeByteToUART(a[4]);
+    writeByteToUART(10);
+    *i2a(t6,a,16)=0;
+    writeByteToUART(a[0]);   
+    writeByteToUART(a[2]);   
+    writeByteToUART(a[3]);   
+    writeByteToUART(a[4]);
+    writeByteToUART(10);
+}
 
 
 // The main command loop
@@ -580,7 +759,7 @@ void loop() {
                  writeByteToUART('V');  // Followed
                  writeByteToUART('1');  // By
                  writeByteToUART('.');  // Version
-                 writeByteToUART('3');  // Number
+                 writeByteToUART('4');  // Number
                  break;
   
         // Command "." means go back to track 0
@@ -615,9 +794,11 @@ void loop() {
                   break;
   
         // Command "<" Read track from the drive
-        case '<': if (!driveEnabled) writeByteToUART('0'); else {
+        case '<': if(!driveEnabled) writeByteToUART('0'); 
+	          else {
                      writeByteToUART('1');
-                     readTrackDataFast();
+                     if(disktypeHD) readTrackDataFast_HD();
+		     else readTrackDataFast();
                   }
                   break;
   
@@ -634,6 +815,24 @@ void loop() {
                   if (!inWriteMode) writeByteToUART('0'); else {
                      writeByteToUART('1');
                      eraseTrack();
+                  }
+                  break;
+
+        // Command "H" Set HD disk type
+        case 'H': 
+                  disktypeHD=1;
+                  writeByteToUART('1');                  
+                  break;
+        // Command "D" Set DD or SD disk type
+        case 'D': 
+                  disktypeHD=0;
+                  writeByteToUART('1');                  
+                  break;
+        // Command "M" measure data timings 
+        case 'M': if(!driveEnabled) writeByteToUART('0'); 
+	          else {
+                     writeByteToUART('1');
+                     measureTrackData();
                   }
                   break;
   
