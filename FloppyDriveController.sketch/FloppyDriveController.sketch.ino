@@ -669,7 +669,7 @@ void measureTrackData() {
 
     register unsigned char counter;
     long totalBits=0;
-    long target = ((long)RAW_TRACKDATA_LENGTH)*(long)8;
+    long target = ((long)RAW_TRACKDATA_LENGTH/4)*(long)8;
 
     while (totalBits<target) {
         for (register unsigned char bits=0; bits<4; bits++) {
@@ -705,41 +705,40 @@ void measureTrackData() {
     
     /* Now output the result: */
     char a[8];
-    *i2a(t1,a,16)=0;
-    writeByteToUART(a[0]);   
-    writeByteToUART(a[2]);   
-    writeByteToUART(a[3]);   
-    writeByteToUART(a[4]);
+    byte i;
+    i=0;
     writeByteToUART(10);
-    *i2a(t2,a,16)=0;
-    writeByteToUART(a[0]);   
-    writeByteToUART(a[2]);   
-    writeByteToUART(a[3]);   
-    writeByteToUART(a[4]);
+    *i2a(t1,a,10)=0;
+    while(a[i]) writeByteToUART(a[i++]);
+    writeByteToUART('-');
+    *i2a(t2,a,10)=0;
+    i=0;
+    while(a[i]) writeByteToUART(a[i++]);
+    writeByteToUART('-');
+    *i2a(t3,a,10)=0;
+    i=0;
+    while(a[i]) writeByteToUART(a[i++]);
     writeByteToUART(10);
-    *i2a(t3,a,16)=0;
-    writeByteToUART(a[0]);   
-    writeByteToUART(a[2]);   
-    writeByteToUART(a[3]);   
-    writeByteToUART(a[4]);
+    *i2a(t4,a,10)=0;
+    i=0;
+    while(a[i]) writeByteToUART(a[i++]);
+    writeByteToUART('-');
+    *i2a(t5,a,10)=0;
+    i=0;
+    while(a[i]) writeByteToUART(a[i++]);
+    writeByteToUART('-');
+    *i2a(t6,a,10)=0;
+    i=0;
+    while(a[i]) writeByteToUART(a[i++]);
     writeByteToUART(10);
-    *i2a(t4,a,16)=0;
-    writeByteToUART(a[0]);   
-    writeByteToUART(a[2]);   
-    writeByteToUART(a[3]);   
-    writeByteToUART(a[4]);
-    writeByteToUART(10);
-    *i2a(t5,a,16)=0;
-    writeByteToUART(a[0]);   
-    writeByteToUART(a[2]);   
-    writeByteToUART(a[3]);   
-    writeByteToUART(a[4]);
-    writeByteToUART(10);
-    *i2a(t6,a,16)=0;
-    writeByteToUART(a[0]);   
-    writeByteToUART(a[2]);   
-    writeByteToUART(a[3]);   
-    writeByteToUART(a[4]);
+    if(t5<100 && t6<100) {
+      writeByteToUART('H');
+      disktypeHD=1;
+    } else {
+      writeByteToUART('D');
+      disktypeHD=0;
+    }
+    writeByteToUART('D');
     writeByteToUART(10);
 }
 
@@ -759,7 +758,7 @@ void loop() {
                  writeByteToUART('V');  // Followed
                  writeByteToUART('1');  // By
                  writeByteToUART('.');  // Version
-                 writeByteToUART('4');  // Number
+                 writeByteToUART('5');  // Number
                  break;
   
         // Command "." means go back to track 0
