@@ -28,6 +28,7 @@
 //
 //
 
+#include "stdafx.h"
 #include "ArduinoInterface.h"
 #include <sstream>
 

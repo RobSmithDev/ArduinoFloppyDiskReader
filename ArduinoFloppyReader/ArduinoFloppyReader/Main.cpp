@@ -21,7 +21,6 @@
 // Example console application for reading and writing floppy disks to and from ADF files //
 ////////////////////////////////////////////////////////////////////////////////////////////
 
-
 #include "stdafx.h"
 #include <windows.h>
 #include "..\lib\ADFWriter.h"

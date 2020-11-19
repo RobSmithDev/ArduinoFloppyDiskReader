@@ -31,6 +31,7 @@
 // were taken from the excellent documentation by Laurent Clévy at http://lclevy.free.fr/adflib/adf_info.html
 // Also credits to Keith Monahan https://www.techtravels.org/tag/mfm/ regarding a bug in the MFM sector start data
 
+#include "stdafx.h"
 #ifdef USING_MFC
 #include <afxwin.h>
 #else
@@ -1142,4 +1143,3 @@ ADFResult ADFWriter::DiskToADF(const std::wstring outputFile, const unsigned int
 
 	return includesBadSectors ? ADFResult::adfrCompletedWithErrors : ADFResult::adfrComplete;
 }
-
