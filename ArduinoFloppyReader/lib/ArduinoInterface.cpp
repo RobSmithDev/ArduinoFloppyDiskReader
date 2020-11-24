@@ -138,7 +138,7 @@ ArduinoInterface::~ArduinoInterface() {
 
 // Check CTS status by asking the device to set it and then checking what happened
 DiagnosticResponse ArduinoInterface::testIndexPulse() {
-	// Port opned.  We need to check what hapens as the pin is toggled
+	// Port opned.  We need to check what happens as the pin is toggled
 	m_lastError = runCommand(COMMAND_DIAGNOSTICS, '3');
 	if (m_lastError != DiagnosticResponse::drOK) {
 		m_lastCommand = LastCommand::lcRunDiagnostics;
@@ -149,7 +149,7 @@ DiagnosticResponse ArduinoInterface::testIndexPulse() {
 
 // Check CTS status by asking the device to set it and then checking what happened
 DiagnosticResponse ArduinoInterface::testDataPulse() {
-	// Port opned.  We need to check what hapens as the pin is toggled
+	// Port opned.  We need to check what happens as the pin is toggled
 	m_lastError = runCommand(COMMAND_DIAGNOSTICS, '4');
 	if (m_lastError != DiagnosticResponse::drOK) {
 		m_lastCommand = LastCommand::lcRunDiagnostics;
@@ -164,7 +164,7 @@ DiagnosticResponse ArduinoInterface::testCTS(const unsigned int portNumber) {
 	if (m_lastError != DiagnosticResponse::drOK) return m_lastError;
 
 	for (int a = 1; a <= 10; a++) {
-		// Port opned.  We need to check what hapens as the pin is toggled
+		// Port opned.  We need to check what happens as the pin is toggled
 		m_lastError = runCommand(COMMAND_DIAGNOSTICS, (a&1)?'1':'2');
 		if (m_lastError != DiagnosticResponse::drOK) {
 			m_lastCommand = LastCommand::lcRunDiagnostics;
