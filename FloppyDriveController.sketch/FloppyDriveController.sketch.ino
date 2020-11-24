@@ -81,8 +81,8 @@
 // Paula on the Amiga used to find the SYNC WORDS and then read 0x1900 further WORDS.  A dos track is 11968 bytes in size, theritical revolution is 12800 bytes. 
 #define RAW_TRACKDATA_LENGTH   (0x1900*2+0x440)         // Paula assumed it was 12868 bytes, so we read that, plus thre size of a sectors
 
-// The current track that the head is over
-int currentTrack = 0;
+// The current track that the head is over. Starts with -1 to identify an unknown head position.
+int currentTrack = -1;
 
 // If the drive has been switched on or not
 bool driveEnabled  = 0;
@@ -185,6 +185,7 @@ void setup() {
     pinMode(PIN_MOTOR_STEP,OUTPUT);
     pinMode(PIN_ACTIVITY_LED,OUTPUT);
     
+    digitalWrite(PIN_MOTOR_STEP, HIGH);
     digitalWrite(PIN_ACTIVITY_LED,LOW);
    
     // Disable all interrupts - we dont want them!
@@ -305,6 +306,9 @@ bool gotoTrackX() {
 
     // Exit if its already been reached
     if (track == currentTrack) return true;
+
+    // If current track is unknown go to track 0 first
+    if (currentTrack == -1) goToTrack0();
 
     // And step the head until we reach this track number
     if (currentTrack < track) {
