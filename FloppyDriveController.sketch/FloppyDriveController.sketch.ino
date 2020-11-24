@@ -1,6 +1,6 @@
 /* ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017-2018 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2020 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk
 *
 * This sketch is free software; you can redistribute it and/or
@@ -17,6 +17,9 @@
 * License along with this sketch; if not, see http://www.gnu.org/licenses
 */
 
+/* Latest History:
+	  Firmware V1.4: Merged with Pull Request #6 (Modified the behavior of the current track location on Arduino boot - paulofduarte) which also addresses issues with some drives
+*/	  
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////
 // This sketch manages the interface between the floppy drive and the computer as well as the     //
@@ -584,7 +587,7 @@ void loop() {
                  writeByteToUART('V');  // Followed
                  writeByteToUART('1');  // By
                  writeByteToUART('.');  // Version
-                 writeByteToUART('3');  // Number
+                 writeByteToUART('4');  // Number
                  break;
   
         // Command "." means go back to track 0

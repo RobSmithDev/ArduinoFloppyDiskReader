@@ -18,6 +18,8 @@ If you want to use the AVR directly instead of within the Arduino environment, t
 For further details including how to wire this up please visit [http://amiga.robsmithdev.co.uk]
 
 # Whats changed?
+v2.32 Merged with Pull Request #6 (Modified the behavior of the current track location on Arduino boot - paulofduarte) which also addresses issues with some drives and updated firmware to 1.4
+      Made a small change to the diagnostics code to also erase the track before writing it
 v2.31 Upgraded the PC code side to work with Visual Studio 2019 resolving issue #11 (ourIThome) and merging pull request #13 (bassclefstudio)
       Fixed a few typos in ArduinoInterface.cpp from pull request #12 (Crkk)
 V2.2  Fixed 99% of checksum errors when writing by erasing the track first

@@ -804,6 +804,12 @@ bool ADFWriter::runDiagnostics(const unsigned int comPort, std::function<void(bo
 	bool writtenOK = false;
 	for (int a = 1; a <= 10; a++) {
 		
+		r = m_device.eraseCurrentTrack();
+		if (r != DiagnosticResponse::drOK) {
+			messageOutput(true, m_device.getLastErrorStr());
+			return false;
+		}
+		
 		r = m_device.writeCurrentTrack((const unsigned char*)(&disktrack), sizeof(disktrack), false);
 		if (r != DiagnosticResponse::drOK) {
 			messageOutput(true, m_device.getLastErrorStr());
