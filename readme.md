@@ -63,18 +63,17 @@ For further details including how to wire this up please visit
 [https://amiga.robsmithdev.co.uk]
 
 # Whats changed?
-v2.4  Improved support for Usb to Serial devices based on findings from GitHub user "prickle" - firmware is now V1.7
-v2.33 Merged with Pull Request #9 (Detect and read out HD floppy disks 1.44M by kollokollo) - firmware is now V1.6
-v2.32 Merged with Pull Request #6 (Modified the behavior of the current track location on Arduino boot - paulofduarte) which also addresses issues with some drives and updated firmware to 1.4
+* v2.4  Improved support for Usb to Serial devices based on findings from GitHub user "prickle" - firmware is now V1.7
+* v2.33 Merged with Pull Request #9 (Detect and read out HD floppy disks 1.44M by kollokollo) - firmware is now V1.6
+* v2.32 Merged with Pull Request #6 (Modified the behavior of the current track location on Arduino boot - paulofduarte) which also addresses issues with some drives and updated firmware to 1.4
       Made a small change to the diagnostics code to also erase the track before writing it
-v2.31 Upgraded the PC code side to work with Visual Studio 2019 resolving issue #11 (ourIThome) and merging pull request #13 (bassclefstudio)
+* v2.31 Upgraded the PC code side to work with Visual Studio 2019 resolving issue #11 (ourIThome) and merging pull request #13 (bassclefstudio)
       Fixed a few typos in ArduinoInterface.cpp from pull request #12 (Crkk)
-V2.2  Fixed 99% of checksum errors when writing by erasing the track first
-V2.1  Diagnostics and potential write bug fixed
-V2.0  Disk reading has been vastly improved and you can now also write disks!
-V1.0  Initial release, can read disks fairly well
+* V2.2  Fixed 99% of checksum errors when writing by erasing the track first
+* V2.1  Diagnostics and potential write bug fixed
+* V2.0  Disk reading has been vastly improved and you can now also write disks!
+* V1.0  Initial release, can read disks fairly well
 
 # Licence
 This entire project is available under the GNU General Public License v3
 licence.  See licence.txt for more details.
-
