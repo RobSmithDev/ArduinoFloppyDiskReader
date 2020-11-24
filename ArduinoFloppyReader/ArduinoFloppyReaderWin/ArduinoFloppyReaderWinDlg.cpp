@@ -1,7 +1,7 @@
 /* ArduinoFloppyReaderWin
 *
 * Copyright (C) 2017-2020 Robert Smith (@RobSmithDev)
-* http://amiga.robsmithdev.co.uk
+* https://amiga.robsmithdev.co.uk
 *
 * This program is free software; you can redistribute it and/or
 * modify it under the terms of the GNU Library General Public

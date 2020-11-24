@@ -1,7 +1,7 @@
 /* ArduinoFloppyReader (and writer)
 *
 * Copyright (C) 2017-2020 Robert Smith (@RobSmithDev)
-* http://amiga.robsmithdev.co.uk
+* https://amiga.robsmithdev.co.uk
 *
 * This sketch is free software; you can redistribute it and/or
 * modify it under the terms of the GNU General Public 
@@ -20,14 +20,18 @@
 /* Latest History:
 	  Firmware V1.4: Merged with Pull Request #6 (Modified the behavior of the current track location on Arduino boot - paulofduarte) which also addresses issues with some drives
 	  Firmware V1.5: Merged with Pull Request #9 (Detect and read out HD floppy disks 1.44M by kollokollo)
-	  Firmware V1.6: Added experimental writing HD disk support
+	  Firmware V1.6: Added experimental unbuffered writing HD disk support
+      Firmware V1.7: Added suggestion from GitHub user "prickle" regarding the CHECK_SERIAL function which should reoslve issues with some of the USB to SERIAL converters
 */	  
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////
 // This sketch manages the interface between the floppy drive and the computer as well as the     //
 // low-level disk reading and writing.  For more information and how to connect your Arduino     //
-// to a floppy drive and computer visit http://amiga.robsmithdev.co.uk                          //
+// to a floppy drive and computer visit https://amiga.robsmithdev.co.uk                         //
 /////////////////////////////////////////////////////////////////////////////////////////////////
+// This code doesnt actually do any decoding, and is mearly reading pulses, so can be used to //
+// Read data from other disk formats too.                                                    //
+//////////////////////////////////////////////////////////////////////////////////////////////
 
 #define BAUDRATE 2000000                 // The baudrate that we want to communicate over (2M)
 #define BAUD_PRESCALLER_NORMAL_MODE      (((F_CPU / (BAUDRATE * 16UL))) - 1)
@@ -93,7 +97,6 @@
 
 // The current track that the head is over. Starts with -1 to identify an unknown head position.
 int currentTrack = -1;
-=======
 
 // If the drive has been switched on or not
 bool driveEnabled  = 0;
@@ -357,11 +360,11 @@ unsigned char SERIAL_BUFFER[SERIAL_BUFFER_SIZE];
 #define CHECK_SERIAL()          if (UCSR0A & ( 1 << RXC0 )) {                      \
                                     SERIAL_BUFFER[serialWritePos++] = UDR0;        \
                                     serialBytesInUse++;                            \
-                                } else                                             \
-                                if (serialBytesInUse<SERIAL_BUFFER_START) {        \
+                                }                                                  \
+                                if (serialBytesInUse<SERIAL_BUFFER_START)          \
                                     PIN_CTS_PORT &= (~PIN_CTS_MASK);               \
-                                    PIN_CTS_PORT|=PIN_CTS_MASK;                    \
-                                }
+                                else PIN_CTS_PORT|=PIN_CTS_MASK;                   
+                                
                                             
 
 
@@ -481,6 +484,7 @@ void writeTrackFromUART() {
 
 
 // Write a track to disk from the UART - the data should be pre-MFM encoded raw track data where '1's are the pulses/phase reversals to trigger
+// THIS CODE IS UNTESTED
 void writeTrackFromUART_HD() {
     // Configure timer 2 just as a counter in NORMAL mode
     TCCR2A = 0 ;              // No physical output port pins and normal operation
@@ -571,10 +575,10 @@ void writeTrackFromUART_HD() {
         WRITE_BIT(0x68,B00000010);
         CHECK_SERIAL();
         WRITE_BIT(0x78,B00000001);
-		TCNT2=248;   // a little cheating, but *should* work
+		    TCNT2=248;   // a little cheating, but *should* work
     }  
 	
-	// Turn off the write head
+	  // Turn off the write head
     PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;
 
     // Done!
@@ -589,7 +593,7 @@ void writeTrackFromUART_HD() {
 
 
 
-// Write a track to disk from the UART - the data should be pre-MFM encoded raw track data where '1's are the pulses/phase reversals to trigger
+// Write blank data to a disk so that no MFM track could be detected
 void eraseTrack() {
     // Configure timer 2 just as a counter in NORMAL mode
     TCCR2A = 0 ;              // No physical output port pins and normal operation
@@ -639,7 +643,8 @@ void eraseTrack() {
 
 
 
-// Write a track to disk from the UART - the data should be pre-MFM encoded raw track data where '1's are the pulses/phase reversals to trigger
+// Write blank data to a disk so that no MFM track could be detected
+// THIS IS UNTESTED
 void eraseTrack_HD() {
     // Configure timer 2 just as a counter in NORMAL mode
     TCCR2A = 0 ;              // No physical output port pins and normal operation
@@ -925,7 +930,7 @@ void loop() {
                  writeByteToUART('V');  // Followed
                  writeByteToUART('1');  // By
                  writeByteToUART('.');  // Version
-                 writeByteToUART('5');  // Number
+                 writeByteToUART('7');  // Number
                  break;
   
         // Command "." means go back to track 0
@@ -961,12 +966,12 @@ void loop() {
   
         // Command "<" Read track from the drive
         case '<': if(!driveEnabled) writeByteToUART('0'); 
-	          else {
+	                else {
                      writeByteToUART('1');
                      if(disktypeHD)
-						 readTrackDataFast_HD();
-					 else
-						 readTrackDataFast();
+						            readTrackDataFast_HD();
+					           else
+						            readTrackDataFast();
                    }
                    break;
   
@@ -975,20 +980,20 @@ void loop() {
                   if (!inWriteMode) writeByteToUART('0'); else {
                      writeByteToUART('1');
                      if(disktypeHD) 
-						 writeTrackFromUART_HD(); 
-					 else 
-						 writeTrackFromUART();
-                  }
-                  break;
+						            writeTrackFromUART_HD(); 
+					          else 
+						            writeTrackFromUART();
+                   }
+                   break;
 
         // Command "X" Erase current track (writes 0xAA to it)
         case 'X': if (!driveEnabled) writeByteToUART('0'); else
                   if (!inWriteMode) writeByteToUART('0'); else {
                      writeByteToUART('1');
                      if (disktypeHD) 
-						 eraseTrack_HD();
-					 else
-						 eraseTrack();
+          						 eraseTrack_HD();
+          					 else
+          						 eraseTrack();
                   }
                   break;
 

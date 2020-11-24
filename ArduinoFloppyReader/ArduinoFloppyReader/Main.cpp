@@ -1,7 +1,7 @@
 /* ArduinoFloppyReader (and writer)
 *
 * Copyright (C) 2017-2020 Robert Smith (@RobSmithDev)
-* http://amiga.robsmithdev.co.uk
+* https://amiga.robsmithdev.co.uk
 *
 * This program is free software; you can redistribute it and/or
 * modify it under the terms of the GNU Library General Public
@@ -127,8 +127,8 @@ void runDiagnostics(int comPort) {
 
 int wmain(int argc, wchar_t* argv[], wchar_t *envp[])
 {
-	printf("Arduino Amiga ADF Floppy disk Reader/Writer, Copyright (C) 2017-2018 Robert Smith\r\n");
-	printf("Full sourcecode and documentation at http://amiga.robsmithdev.co.uk\r\n");
+	printf("Arduino Amiga ADF Floppy disk Reader/Writer, Copyright (C) 2017-2020 Robert Smith\r\n");
+	printf("Full sourcecode and documentation at https://amiga.robsmithdev.co.uk\r\n");
 	printf("This is free software licenced under the GNU General Public Licence V3\r\n\r\n");
 
 	if (argc < 3) {
