@@ -1,6 +1,6 @@
 /* ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017-2018 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2020 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk
 *
 * This library is free software; you can redistribute it and/or
@@ -56,13 +56,13 @@ namespace ArduinoFloppyReader {
 
 
 	// Represent which side of the disk we're looking at
-	enum DiskSurface {
+	enum class DiskSurface {
 							dsUpper,            // The upper side of the disk
 							dsLower             // The lower side of the disk
 						};
 
 	// Diagnostic responses from the interface
-	enum DiagnosticResponse {
+	enum class DiagnosticResponse {
 								drOK,
 
 								// Responses from openPort
@@ -96,7 +96,7 @@ namespace ArduinoFloppyReader {
 								drRewindFailure,
 							};
 
-	enum LastCommand {
+	enum class LastCommand {
 		lcOpenPort,
 		lcGetVersion,
 		lcEnableWrite,

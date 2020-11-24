@@ -1,6 +1,6 @@
 /* ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017-2018 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2020 Robert Smith (@RobSmithDev)
 * http://amiga.robsmithdev.co.uk
 *
 * This library is free software; you can redistribute it and/or
@@ -31,7 +31,6 @@
 // were taken from the excellent documentation by Laurent Clévy at http://lclevy.free.fr/adflib/adf_info.html
 // Also credits to Keith Monahan https://www.techtravels.org/tag/mfm/ regarding a bug in the MFM sector start data
 
-#include "stdafx.h"
 #ifdef USING_MFC
 #include <afxwin.h>
 #else
@@ -920,7 +919,7 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool eraseFirst, bo
 
 		// Handle callback
 		if (callback)
-			if (callback(currentTrack, surface, false) == wrAbort) {
+			if (callback(currentTrack, surface, false) == WriteResponse::wrAbort) {
 				CloseHandle(hADFFile);
 				return ADFResult::adfrAborted;
 			}
@@ -939,7 +938,7 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool eraseFirst, bo
 
 			if (eraseFirst) {
 				if (m_device.eraseCurrentTrack() != DiagnosticResponse::drOK)
-					return adfrDriveError;
+					return ADFResult::adfrDriveError;
 			}
 
 			switch (m_device.writeCurrentTrack((const unsigned char*)(&disktrack), sizeof(disktrack), false)) {
@@ -992,10 +991,10 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool eraseFirst, bo
 						bool breakOut = false;
 
 						switch (callback(currentTrack, surface, true)) {
-						case wrAbort: CloseHandle(hADFFile);
+						case WriteResponse::wrAbort: CloseHandle(hADFFile);
 							return ADFResult::adfrAborted;
-						case wrSkipBadChecksums: breakOut = true; errors = true; break;
-						case wrContinue: break;
+						case WriteResponse::wrSkipBadChecksums: breakOut = true; errors = true; break;
+						case WriteResponse::wrContinue: break;
 						}
 						if (breakOut) break;
 						failCount = 0;
