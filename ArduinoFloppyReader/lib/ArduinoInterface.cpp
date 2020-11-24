@@ -46,7 +46,9 @@ using namespace ArduinoFloppyReader;
 #define COMMAND_ENABLEWRITE        '~'
 #define COMMAND_ERASETRACK         'X'
 #define COMMAND_DIAGNOSTICS        '&'
-
+#define COMMAND_SWITCHTO_DD		   'D'
+#define COMMAND_SWITCHTO_HD		   'H'
+#define COMMAND_DETECT_DISK_TYPE   'M'	// currently not implemented here
 
 // Convert the last executed command that had an error to a string
 std::string lastCommandToName(LastCommand cmd) {
@@ -63,6 +65,7 @@ std::string lastCommandToName(LastCommand cmd) {
 	case LastCommand::lcWriteTrack:		return "WriteTrack";
 	case LastCommand::lcRunDiagnostics:	return "RunDiagnostics";
 	case LastCommand::lcEraseTrack:		return "EraseTrack";
+	case LastCommand::lcSwitchDiskMode: return "SetCapacity";
 	default:							return "Unknown";
 	}
 }
@@ -436,6 +439,18 @@ DiagnosticResponse ArduinoInterface::enableReading(const bool enable, const bool
 
 		return m_lastError;
 	}
+}
+
+// Check and switch to HD disk
+DiagnosticResponse ArduinoInterface::setDiskCapacity(bool switchToHD_Disk) {
+	// Disable the device
+	m_lastError = runCommand(switchToHD_Disk ? COMMAND_SWITCHTO_HD : COMMAND_SWITCHTO_DD);
+	if (m_lastError != DiagnosticResponse::drOK) {
+		m_lastCommand = LastCommand::lcSwitchDiskMode;
+		return m_lastError;
+	}
+
+	return m_lastError;
 }
 
 // Select the track, this makes the motor seek to this position

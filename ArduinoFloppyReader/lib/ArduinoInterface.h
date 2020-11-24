@@ -108,7 +108,8 @@ namespace ArduinoFloppyReader {
 		lcReadTrack,
 		lcWriteTrack,
 		lcEraseTrack,
-		lcRunDiagnostics
+		lcRunDiagnostics,
+		lcSwitchDiskMode
 	};
 
 	class ArduinoInterface {
@@ -164,6 +165,9 @@ namespace ArduinoFloppyReader {
 
 		// Check CTS status by asking the device to set it and then checking what happened
 		DiagnosticResponse testDataPulse();
+
+		// Check and switch to HD disk
+		DiagnosticResponse setDiskCapacity(bool switchToHD_Disk);
 
 		// Select the track, this makes the motor seek to this position
 		DiagnosticResponse  selectTrack(const unsigned char trackIndex);
