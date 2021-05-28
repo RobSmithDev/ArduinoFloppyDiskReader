@@ -1,6 +1,6 @@
 /* ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017-2020 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2021 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This library is free software; you can redistribute it and/or
@@ -28,22 +28,33 @@
 // The class also handles writing an ADF file back to disk and optionally verifying the write.
 // 
 // The MFM decoding algorithm and information regarding finding the start of a sector
-// were taken from the excellent documentation by Laurent Clévy at http://lclevy.free.fr/adflib/adf_info.html
+// were taken from the excellent documentation by Laurent Clï¿½vy at http://lclevy.free.fr/adflib/adf_info.html
 // Also credits to Keith Monahan https://www.techtravels.org/tag/mfm/ regarding a bug in the MFM sector start data
+//
+// V2.5
 
-#ifdef USING_MFC
-#include <afxwin.h>
-#else
-#include <Windows.h>
-#endif
 #include <vector>
 #include <algorithm>
 #include "ADFWriter.h"
 #include "ArduinoInterface.h"
+#include "RotationExtractor.h"
 #include <assert.h>
 #include <sstream>
+#include <string>
+#include <codecvt>
+#include <thread>
+#include <fstream>
+#include <iostream>
+#ifndef _WIN32
+#include <string.h>
+#include <cstring>
+#endif
 
 using namespace ArduinoFloppyReader;
+
+#ifndef OUTPUT_TIME_IN_NS
+WARNING: OUTPUT_TIME_IN_NS MUST BE DEFINED IN REVOLUTIONEXTRACTOR.H FOR THIS CLASS TO WORK CORRECTLY
+#endif
 
 
 #define MFM_MASK    0x55555555L		
@@ -61,10 +72,12 @@ typedef unsigned char RawEncodedSector[RAW_SECTOR_SIZE];
 typedef unsigned char RawDecodedSector[SECTOR_BYTES];
 typedef RawDecodedSector RawDecodedTrack[NUM_SECTORS_PER_TRACK];
 typedef unsigned char RawMFMData[SECTOR_BYTES + SECTOR_BYTES];
-typedef struct alignas(8) {
-	unsigned char filler1[8];  // generally the Amiga can't see these if we write from the index
+
+// When workbench formats a disk, it write 13630 bytes of mfm data to the disk.  So we're going to write this amount, and then we dont need an erase first
+typedef struct alignas(1) {
+	unsigned char filler1[1654];  // Padding at the start of the track.  This will be set to 0xaa
 	// Raw sector data
-	RawEncodedSector sectors[NUM_SECTORS_PER_TRACK];
+	RawEncodedSector sectors[NUM_SECTORS_PER_TRACK];   // 11968 bytes
 	// Blank "Filler" gap content. (this may get overwritten by the sectors a little)
 	unsigned char filler2[8];
 } FullDiskTrack;
@@ -78,11 +91,11 @@ typedef struct alignas(8)  {
 
 	unsigned long sectorLabel[4];     // OS Recovery Data, we ignore this
 
-	DWORD headerChecksum;			  // Read from the header, header checksum
-	DWORD dataChecksum;			      // Read from the header, data checksum
+	unsigned long headerChecksum;	  // Read from the header, header checksum
+	unsigned long dataChecksum;		  // Read from the header, data checksum
 
-	DWORD headerChecksumCalculated;   // The header checksum we calculate
-	DWORD dataChecksumCalculated;     // The data checksum we calculate
+	unsigned long headerChecksumCalculated;   // The header checksum we calculate
+	unsigned long dataChecksumCalculated;     // The data checksum we calculate
 
 	RawDecodedSector data;          // decoded sector data
 
@@ -348,23 +361,10 @@ bool decodeSector(const RawEncodedSector& rawSector, const unsigned int trackNum
 	}
 }
 
-
-#define BYTE_TO_BINARY_PATTERN "%c%c%c%c%c%c%c%c"
-#define BYTE_TO_BINARY(byte)  \
-  (byte & 0x80 ? '1' : '0'), \
-  (byte & 0x40 ? '1' : '0'), \
-  (byte & 0x20 ? '1' : '0'), \
-  (byte & 0x10 ? '1' : '0'), \
-  (byte & 0x08 ? '1' : '0'), \
-  (byte & 0x04 ? '1' : '0'), \
-  (byte & 0x02 ? '1' : '0'), \
-  (byte & 0x01 ? '1' : '0') 
-
-
 // Encode a sector into the correct format for disk
-void encodeSector(const unsigned int trackNumber, const DiskSurface surface, const unsigned int sectorNumber, const RawDecodedSector& input, RawEncodedSector& encodedSector) {
+void encodeSector(const unsigned int trackNumber, const DiskSurface surface, const unsigned int sectorNumber, const RawDecodedSector& input, RawEncodedSector& encodedSector, unsigned char& lastByte) {
 	// Sector Start
-	encodedSector[0] = 0xAA;
+	encodedSector[0] = (lastByte & 1) ? 0x2A : 0xAA;
 	encodedSector[1] = 0xAA;
 	encodedSector[2] = 0xAA;
 	encodedSector[3] = 0xAA;
@@ -405,22 +405,24 @@ void encodeSector(const unsigned int trackNumber, const DiskSurface surface, con
 			lastBit = thisBit;			
 			thisBit = encodedSector[count] & (1 << (bit-1));
 	
-			if (!(lastBit | thisBit)) {
+			if (!(lastBit || thisBit)) {
 				// Encode a 1!
 				encodedSector[count] |= (1 << bit);
 			}
 		}
-	}	
+	}
+
+	lastByte = encodedSector[RAW_SECTOR_SIZE - 1];
 }
 
 // Find sectors within raw data read from the drive by searching bit-by-bit for the SYNC bytes
-void findSectors(const RawTrackData& track, unsigned int trackNumber, DiskSurface side, WORD trackSync, DecodedTrack& decodedTrack, bool ignoreHeaderChecksum) {
+void findSectors(const RawTrackData& track, unsigned int trackNumber, DiskSurface side, unsigned short trackSync, DecodedTrack& decodedTrack, bool ignoreHeaderChecksum) {
 	// Work out what we need to search for which is 2AAAAAAAsyncsync
 	//const unsigned long long search = (trackSync | (((DWORD)trackSync) << 16)) | (((long long)0x2AAAAAAA) << 32);
 	// For speed and to ignore some data errors, we now just search for syncsync and ignore the 2AAAAAAA part
 
 	// Work out what we need to search for which is syncsync
-	const unsigned long search = (trackSync | (((DWORD)trackSync) << 16));
+	const unsigned long search = (trackSync | (((unsigned long)trackSync) << 16));
 
 	// Prepare our test buffer
 	unsigned long decoded = 0;
@@ -431,7 +433,7 @@ void findSectors(const RawTrackData& track, unsigned int trackNumber, DiskSurfac
 	int nextTrackBitCount = 0;
 
 	// run the entire track length
-	while (byteIndex<RAW_TRACKDATA_LENGTH) {
+	while (byteIndex < RAW_TRACKDATA_LENGTH) {
 
 		// Check each bit, the "decoded" variable slowly slides left providing a 64-bit wide "window" into the bitstream
 		for (int bitIndex = 7; bitIndex >= 0; bitIndex--) {
@@ -441,17 +443,17 @@ void findSectors(const RawTrackData& track, unsigned int trackNumber, DiskSurfac
 			// Have we matched the sync words correctly
 			++nextTrackBitCount;
 			int lastSectorNumber = -1;
-			if (( decoded == search) || ((nextTrackBitCount >=63) && (nextTrackBitCount <= 65))) {
+			if (decoded == search) {
 				RawEncodedSector alignedSector;
 				
 				// We extract ALL of the track data from this BIT to byte align it properly, then pass it onto the code to read the sector (from the start of the sync code)
 				alignSectorToByte(track, byteIndex, bitIndex, alignedSector);
-				
+
 				// Now see if there's a valid sector there.  We now only skip the sector if its valid, incase rogue data gets in there
 				if (decodeSector(alignedSector, trackNumber, side, decodedTrack, ignoreHeaderChecksum, lastSectorNumber)) {
 					// We know the size of this buffer, so we can skip by exactly this amount
 					byteIndex += RAW_SECTOR_SIZE - 8; // skip this many bytes as we know this is part of the track! minus 8 for the SYNC
-					if (byteIndex >= RAW_TRACKDATA_LENGTH) break; 
+					if (byteIndex >= RAW_TRACKDATA_LENGTH) break;
 					// We know that 8 bytes from here should be another track. - we allow 1 bit either way for slippage, but this allows an extra check incase the SYNC pattern is damaged
 					nextTrackBitCount = 0;
 				}
@@ -459,7 +461,7 @@ void findSectors(const RawTrackData& track, unsigned int trackNumber, DiskSurfac
 
 					// Decode failed.  Lets try a "homemade" one
 					DecodedSector newTrack;
-					if ((lastSectorNumber>=0) && (lastSectorNumber<NUM_SECTORS_PER_TRACK)) {
+					if ((lastSectorNumber >= 0) && (lastSectorNumber < NUM_SECTORS_PER_TRACK)) {
 						newTrack.sectorNumber = lastSectorNumber;
 						if (attemptFixSector(decodedTrack, newTrack)) {
 							memcpy(newTrack.rawSector, alignedSector, sizeof(newTrack.rawSector));
@@ -471,7 +473,7 @@ void findSectors(const RawTrackData& track, unsigned int trackNumber, DiskSurfac
 							}
 						}
 					}
-					if (decoded == search) nextTrackBitCount = 0;					
+					if (decoded == search) nextTrackBitCount = 0;
 				}
 			}
 		}
@@ -495,9 +497,9 @@ void mergeInvalidSectors(DecodedTrack& track) {
 }
 
 // Open the device we want to use.  Returns TRUE if it worked
-bool ADFWriter::openDevice(const unsigned int comPort) {
-	if (m_device.openPort(comPort) != DiagnosticResponse::drOK) return false;
-	Sleep(100);
+bool ADFWriter::openDevice(const std::wstring& portName) {
+	if (m_device.openPort(portName) != DiagnosticResponse::drOK) return false;
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	return m_device.enableReading(true, true)== DiagnosticResponse::drOK;
 }
 
@@ -506,24 +508,30 @@ void ADFWriter::closeDevice() {
 	m_device.closePort();
 }
 
-
-// Run diagnostics on the system.  You do not need to call openDevice first.  Return TURE if everything passed
-bool ADFWriter::runDiagnostics(const unsigned int comPort, std::function<void(bool isError, const std::string message)> messageOutput, std::function<bool(bool isQuestion, const std::string question)> askQuestion) {
+// Run diagnostics on the system.  You do not need to call openDevice first.  Return TRUE if everything passed
+bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(bool isError, const std::string message)> messageOutput, std::function<bool(bool isQuestion, const std::string question)> askQuestion) {
 	std::stringstream msg;
 	if (!messageOutput) return false;
 	if (!askQuestion) return false;
 
-	if (!askQuestion(false, "Please insert a disk in the drive.\r\nUse a disk that you dont mind being erased.\nThis disk must contain data/formatted as an AmigaDOS disk")) {
+	if (!askQuestion(false, "Please insert a disk in the drive.\r\nUse a disk that you don't mind being erased.\nThis disk must contain data/formatted as an AmigaDOS disk")) {
 		messageOutput(true, "Diagnostics aborted");
 		return false;
 	}
 
-	msg << "Attempting to open and use COM " << comPort << " without CTS";
+	msg << "Attempting to open and use ";
+	char convert[20];
+#ifdef _WIN32	
+	sprintf_s(convert, "%ls", portName.c_str());
+#else
+	sprintf(convert, "%ls", portName.c_str());
+#endif
+	msg << convert << " without CTS";
 	messageOutput(false,msg.str());
 
 	// Step 1 is to check the com port stuff
-	DiagnosticResponse r = m_device.openPort(comPort, false);
-
+	DiagnosticResponse r = m_device.openPort(portName, false);
+	
 	// Check response
 	if (r != DiagnosticResponse::drOK) {
 		messageOutput(true,m_device.getLastErrorStr());
@@ -532,9 +540,8 @@ bool ADFWriter::runDiagnostics(const unsigned int comPort, std::function<void(bo
 	}
 
 	// Step 2: This has been setup with CTS stuff disabled, but the port opened.  So lets validate CTS *is* working as we expect it to
-	
 	messageOutput(false, "Testing CTS pin");
-	r = m_device.testCTS(comPort);
+	r = m_device.testCTS();
 	
 	// Check response
 	if (r != DiagnosticResponse::drOK) {
@@ -542,16 +549,51 @@ bool ADFWriter::runDiagnostics(const unsigned int comPort, std::function<void(bo
 		messageOutput(true, "Please check the following PINS on the Arduino: A2");
 		return false;
 	}
-
+	
 	// Step 3: CTS is working correctly, so re-open the port in normal mode
 	messageOutput(false, "CTS OK.  Reconnecting with CTS enabled");
 	m_device.closePort();
-	r = m_device.openPort(comPort, true);
+	r = m_device.openPort(portName, true);
 
 	// Check response
 	if (r != DiagnosticResponse::drOK) {
 		messageOutput(true, m_device.getLastErrorStr());
 		return false;
+	}
+
+	FirmwareVersion version = m_device.getFirwareVersion();
+	if ((version.major < 1) || (version.major > 9)) {
+		messageOutput(true, "Error reading firmware version. Something is wrong with the communication between the PC and the Arduino.");
+		return false;
+	}
+
+	char buffer[250];
+#ifdef _WIN32	
+	sprintf_s(buffer, "Board is running firmware version %i.%i%s\n", version.major, version.minor, version.fullControlMod ? " (modded for DiskChange support)" : "");
+#else	
+	sprintf(buffer, "Board is running firmware version %i.%i%s\n", version.major, version.minor, version.fullControlMod ? " (modded for DiskChange support)" : "");
+#endif
+	messageOutput(false, buffer);
+
+	if ((version.major == 1) && (version.minor < 8)) {
+		messageOutput(false, "This firmware is out of date.  Please update it!");
+	}
+
+	if ((version.major > 1) || ((version.major == 1) && (version.minor >= 8))) {
+		messageOutput(false, "Testing USB->Serial transfer speed (read)");
+		if (m_device.testTransferSpeed() != DiagnosticResponse::drOK) {
+			messageOutput(false, "The USB->Serial adapter in use is not suitable.");
+			messageOutput(false, "Arduino UNO: The on-board adapter is not able to sustain large data transfers");
+			messageOutput(false, "Arduino Pro Mini: The USB-Serial board is not able to sustain large data transfers");
+			messageOutput(false, "Arduino Nano: The USB-Serial on this board is not fast enough to sustain large data transfers");
+			messageOutput(false, "");
+			messageOutput(false, "If you are using any of the devices with a CH340 converter then swap it for an FTDI one.");
+			messageOutput(false, "If you still have problems after switching, connect the Arduino using a shorter cable");
+			messageOutput(false, "and if possible directly (ie: not via a USB hub)");
+			messageOutput(true, "Diagnostics failed.");
+			return false;
+		}
+		messageOutput(false, "Read speed test passed.  USB to serial converter is functioning correctly!");
 	}
 
 	// Functions to test
@@ -564,7 +606,7 @@ bool ADFWriter::runDiagnostics(const unsigned int comPort, std::function<void(bo
 
 	// Ask the user for verification of the result
 	if (!askQuestion(true,"Did the floppy disk start spinning, and did the drive LED switch on?")) {
-		messageOutput(true, "Please check the drive has power and the following PINS on the Arduino: 5 and A0");
+		messageOutput(true, "Please check the drive has power and the following PINS on the Arduino: 5 and 11");
 		return false;
 	}
 
@@ -600,6 +642,46 @@ bool ADFWriter::runDiagnostics(const unsigned int comPort, std::function<void(bo
 		return false;
 	}
 
+	// Test DiskChange
+	if (version.fullControlMod) {
+		// Goto track 3, just like the Amiga
+		m_device.selectTrack(3);
+
+		std::chrono::time_point<std::chrono::steady_clock> start = std::chrono::steady_clock::now();
+		messageOutput(false, "Testing Disk Change pin.");
+		messageOutput(false, "*** Please remove disk from drive *** (you have 30 seconds)");
+		while (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() < 30000) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(250));
+			if (m_device.checkForDisk(true) == DiagnosticResponse::drNoDiskInDrive) break;
+		}
+
+		if (m_device.isDiskInDrive()) {
+			messageOutput(true, "Disk change is NOT working correctly");
+			messageOutput(true, "Please check the following pins on the Arduino: 10, 11");
+			return false;
+		}
+
+		start = std::chrono::steady_clock::now();
+		messageOutput(false, "*** Please re-insert disk into drive *** (you have 30 seconds)");
+		while (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() < 30000) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+			m_device.selectTrack(2);
+			if (m_device.isDiskInDrive()) break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+			m_device.selectTrack(3);
+			if (m_device.isDiskInDrive()) break;
+		}
+
+		if (m_device.isDiskInDrive()) {
+			messageOutput(false, "Disk change is working correctly");
+		}
+		else {
+			messageOutput(true, "Disk change is NOT working correctly");
+			messageOutput(true, "Please check the following pins on the Arduino: 10, 11");
+			return false;
+		}		
+	}
+
 	// So we can open the drive and move the head.  We're going to turn the drive off
 	r = m_device.enableReading(false, false);
 	if (r != DiagnosticResponse::drOK) {
@@ -607,9 +689,18 @@ bool ADFWriter::runDiagnostics(const unsigned int comPort, std::function<void(bo
 		return false;
 	}
 
-	if (!askQuestion(false,"Please insert a write protected AmigaDOS disk in the drive")) {
-		messageOutput(true, "Diagnostics aborted");
-		return false;
+	for (;;) {
+		if (!askQuestion(false, "Please insert a write protected AmigaDOS disk in the drive")) {
+			messageOutput(true, "Diagnostics aborted");
+			return false;
+		}
+
+		if ((version.major > 1) || ((version.major == 1) && (version.minor >= 8))) {
+			if (m_device.checkIfDiskIsWriteProtected(true) == DiagnosticResponse::drWriteProtected) break;
+			messageOutput(true, "Disk is not write protected.");
+			messageOutput(true, "If it is, then check Arduin Pin A0");
+			return false;
+		}
 	}
 
 	messageOutput(false, "Starting drive, and seeking to track 40.");
@@ -789,6 +880,7 @@ bool ADFWriter::runDiagnostics(const unsigned int comPort, std::function<void(bo
 
 	// Get length
 	int sequenceLength = strlen(TEST_BYTE_SEQUENCE);
+	unsigned char lastByte = 0;
 
 	for (unsigned int sector = 0; sector < NUM_SECTORS_PER_TRACK; sector++) {
 
@@ -796,19 +888,13 @@ bool ADFWriter::runDiagnostics(const unsigned int comPort, std::function<void(bo
 		for (int bytePos = 0; bytePos < SECTOR_BYTES; bytePos++)
 			track[sector][bytePos] = TEST_BYTE_SEQUENCE[(sector + bytePos) % sequenceLength];
 
-		encodeSector(41, ArduinoFloppyReader::DiskSurface::dsUpper, sector, track[sector], disktrack.sectors[sector]);
+		encodeSector(41, ArduinoFloppyReader::DiskSurface::dsUpper, sector, track[sector], disktrack.sectors[sector], lastByte);
 	}
 
 	// Attempt to write 10 times, with verify
 	messageOutput(false, "Writing and Verifying Track 41 (Upper Side).");
 	bool writtenOK = false;
 	for (int a = 1; a <= 10; a++) {
-		
-		r = m_device.eraseCurrentTrack();
-		if (r != DiagnosticResponse::drOK) {
-			messageOutput(true, m_device.getLastErrorStr());
-			return false;
-		}
 		
 		r = m_device.writeCurrentTrack((const unsigned char*)(&disktrack), sizeof(disktrack), false);
 		if (r != DiagnosticResponse::drOK) {
@@ -879,18 +965,28 @@ bool ADFWriter::runDiagnostics(const unsigned int comPort, std::function<void(bo
 	
 }
 
-
+// Get the current firmware version.  Only valid if openPort is successful
+const FirmwareVersion ADFWriter::getFirwareVersion() const {
+	return m_device.getFirwareVersion(); 
+};
 
 // Writes an ADF file back to a floppy disk.  Return FALSE in the callback to abort this operation 
-ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool eraseFirst, bool verify, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError) > callback) {
+// IF using precomp mode then DO NOT connect the Arduino via a USB hub, and try to plug it into a USB2 port
+ADFResult ADFWriter::ADFToDisk(const std::wstring& inputFile, bool verify, bool usePrecompMode, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError) > callback) {
 	if (!m_device.isOpen()) return ADFResult::adfrDriveError;
 
 	// Upgrade to writing mode
 	if (m_device.enableWriting(true, true)!=DiagnosticResponse::drOK) return ADFResult::adfrDriveError;
 
 	// Attempt to open the file
-	HANDLE hADFFile = CreateFile(inputFile.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0);
-	if (hADFFile == INVALID_HANDLE_VALUE) return ADFResult::adfrFileError;
+#ifdef _WIN32	
+	std::ifstream hADFFile(inputFile, std::ifstream::in | std::ifstream::binary);
+#else
+	std::string inputFileA;
+	quickw2a(inputFile,inputFileA);
+	std::ifstream hADFFile(inputFileA, std::ifstream::in | std::ifstream::binary);
+#endif
+	if (!hADFFile.is_open()) return ADFResult::adfrFileError;
 
 	unsigned int currentTrack = 0;
 	unsigned int surfaceIndex = 0;
@@ -905,34 +1001,39 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool eraseFirst, bo
 	assert(sizeof(track) == ADF_TRACK_SIZE);
 	bool errors = false;
 
-	DWORD bytesRead;
-	while (ReadFile(hADFFile, &track, ADF_TRACK_SIZE, &bytesRead, nullptr)) {
+
+	while (hADFFile.good()) {
+		hADFFile.read((char*)&track, ADF_TRACK_SIZE);
+		std::streamsize bytesRead = hADFFile.gcount();
+
 		// Stop if we didnt read a full track
 		if (bytesRead != ADF_TRACK_SIZE) break;
 
 		// Select the track we're working on
 		if (m_device.selectTrack(currentTrack)!= DiagnosticResponse::drOK) {
-			CloseHandle(hADFFile);
+			hADFFile.close();
 			return ADFResult::adfrDriveError;
 		}
 
 		DiskSurface surface = (surfaceIndex == 1) ? DiskSurface::dsUpper : DiskSurface::dsLower;
 		// Change the surface we're targeting
 		if (m_device.selectSurface(surface) != DiagnosticResponse::drOK) {
-			CloseHandle(hADFFile);
+			hADFFile.close();
 			return ADFResult::adfrDriveError;
 		}
 
 		// Handle callback
 		if (callback)
 			if (callback(currentTrack, surface, false) == WriteResponse::wrAbort) {
-				CloseHandle(hADFFile);
+				hADFFile.close();
 				return ADFResult::adfrAborted;
 			}
 
+		unsigned char lastByte = disktrack.filler1[sizeof(disktrack.filler1)-1];
 		// Now encode the sector into the output buffer
 		for (unsigned int sector = 0; sector < NUM_SECTORS_PER_TRACK; sector++)
-			encodeSector(currentTrack, surface, sector, track[sector], disktrack.sectors[sector]);
+			encodeSector(currentTrack, surface, sector, track[sector], disktrack.sectors[sector], lastByte);
+		if (lastByte & 1) disktrack.filler2[7] = 0x2F; else disktrack.filler2[7] = 0xFF;
 
 		// Keep looping until it wrote correctly
 		DecodedTrack trackRead;
@@ -942,21 +1043,19 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool eraseFirst, bo
 		int failCount = 0;
 		while (trackRead.validSectors.size()<NUM_SECTORS_PER_TRACK) {
 
-			if (eraseFirst) {
-				if (m_device.eraseCurrentTrack() != DiagnosticResponse::drOK)
-					return ADFResult::adfrDriveError;
-			}
+			DiagnosticResponse resp = m_device.writeCurrentTrackPrecomp((const unsigned char*)(&disktrack), sizeof(disktrack), false, (currentTrack >= 40) && usePrecompMode);
+			if (resp == DiagnosticResponse::drOldFirmware) resp = m_device.writeCurrentTrack((const unsigned char*)(&disktrack), sizeof(disktrack), false);		
 
-			switch (m_device.writeCurrentTrack((const unsigned char*)(&disktrack), sizeof(disktrack), false)) {
-			case DiagnosticResponse::drWriteProtected: CloseHandle(hADFFile);
-							return ADFResult::adfrDiskWriteProtected;
+			switch (resp) {
+			case DiagnosticResponse::drWriteProtected:	hADFFile.close();
+														return ADFResult::adfrDiskWriteProtected;
 			case DiagnosticResponse::drOK: break;
-			default: CloseHandle(hADFFile);
+			default: hADFFile.close();
 					 return ADFResult::adfrDriveError;
 			}
 
 			if (verify) {				
-				for (int retries=0; retries<5; retries++) {
+				for (int retries=0; retries<10; retries++) {
 					RawTrackData data;
 					// Read the track back
 					if (m_device.readCurrentTrack(data, false) == DiagnosticResponse::drOK) {
@@ -997,10 +1096,11 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool eraseFirst, bo
 						bool breakOut = false;
 
 						switch (callback(currentTrack, surface, true)) {
-						case WriteResponse::wrAbort: CloseHandle(hADFFile);
+						case WriteResponse::wrAbort: hADFFile.close();
 							return ADFResult::adfrAborted;
 						case WriteResponse::wrSkipBadChecksums: breakOut = true; errors = true; break;
 						case WriteResponse::wrContinue: break;
+						default: break;
 						}
 						if (breakOut) break;
 						failCount = 0;
@@ -1009,7 +1109,6 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool eraseFirst, bo
 			}
 			else break;
 		}
-
 
 		// Goto the next surface/track
 		surfaceIndex++;
@@ -1024,16 +1123,307 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring inputFile, bool eraseFirst, bo
 	return errors? ADFResult::adfrCompletedWithErrors: ADFResult::adfrComplete;
 }
 
+#pragma pack(1) 
+
+/* Taken from https://www.cbmstuff.com/downloads/scp/scp_image_specs.txt
+This information is copyright(C) 2012 - 2020 By Jim Drew.Permission is granted
+for inclusion with any source code when keeping this copyright notice.
+*/
+struct SCPFileHeader {
+	char			headerSCP[3];
+	unsigned char	version;
+	unsigned char	diskType;
+	unsigned char	numRevolutions;
+	unsigned char	startTrack;
+	unsigned char   endTrack;
+	unsigned char	flags;
+	unsigned char	bitcellEncoding;
+	unsigned char	numHeads;
+	unsigned char   timeBase;
+	unsigned long	checksum;
+};
+
+struct SCPTrackHeader {
+	char			headerTRK[3];
+	unsigned char	trackNumber;
+};
+
+struct SCPTrackRevolution {
+	unsigned long	indexTime;		// Time in NS/25 for this revolution
+	unsigned long	trackLength;	// Number of bit-cells in this revolution
+	unsigned long	dataOffset;		// From the start of SCPTrackHeader 
+};
+
+// Track data is 16-bit value in NS/25.  If =0 means no flux transition for max time 
+#pragma pack()
+
+#define BITFLAG_INDEX		0
+#define BITFLAG_NORMALISED  3
+
+typedef std::vector<unsigned short> SCPTrackData;
+
+struct SCPTrackInMemory {
+	SCPTrackHeader header;
+	std::vector<SCPTrackRevolution> revolution;
+	std::vector<SCPTrackData> revolutionData;
+}; 
+
+// Reads the disk and write the data to the SCP file supplied.  The callback is for progress, and you can returns FALSE to abort the process
+// numTracks is the number of tracks to read.  Usually 80 (0..79), sometimes track 80 and 81 are needed. revolutions is hwo many revolutions of the disk to save (1-5)
+// SCP files are a low level flux record of the disk and usually can backup copy protected disks to.  Without special hardware they can't usually be written back to disks.
+ADFResult ADFWriter::DiskToSCP(const std::wstring& outputFile, const unsigned int numTracks, const unsigned char revolutions, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound)> callback) {
+	if (!m_device.isOpen()) return ADFResult::adfrDriveError;
+
+	FirmwareVersion v = m_device.getFirwareVersion();
+	if ((v.major == 1) && (v.minor < 8)) return  ADFResult::adfrFirmwareTooOld;
+
+	// Higher than this is not supported
+	if (numTracks > 82) return ADFResult::adfrDriveError;
+	if (revolutions < 1) return ADFResult::adfrDriveError;
+	if (revolutions > 5) return ADFResult::adfrDriveError;
+
+	// Attempt ot open the file
+#ifdef _WIN32	
+	std::fstream hADFFile = std::fstream(outputFile, std::ofstream::out | std::ofstream::in | std::ofstream::binary | std::ofstream::trunc);
+#else
+	std::string outputFileA;
+	quickw2a(outputFile,outputFileA);
+	std::fstream hADFFile = std::fstream(outputFileA, std::ofstream::out | std::ofstream::in | std::ofstream::binary | std::ofstream::trunc);
+#endif	
+	if (!hADFFile.is_open()) return ADFResult::adfrFileError;
+
+	SCPFileHeader header;
+	header.headerSCP[0] = 'S';
+	header.headerSCP[1] = 'C';
+	header.headerSCP[2] = 'P';
+	header.version = 2 | (2 << 4);    // CHECK
+	header.diskType = 0x80;
+	header.numRevolutions = revolutions;
+	header.startTrack = 0;
+	header.numHeads = 0;  // both heads
+	header.timeBase = 0;
+	header.endTrack = (numTracks*2) - 1;
+	header.flags = (1 << BITFLAG_INDEX) | (1 << BITFLAG_NORMALISED);
+	header.bitcellEncoding = 0; // 25ns
+	// to be calculated
+	header.checksum = 0;
+
+	SCPTrackInMemory track;
+	track.header.headerTRK[0] = 'T';
+	track.header.headerTRK[1] = 'R';
+	track.header.headerTRK[2] = 'K';
+
+	try {
+		hADFFile.write((const char*)&header, sizeof(header));
+	} catch (...) {
+			hADFFile.close();
+		return ADFResult::adfrFileIOError;
+	}
+
+	// Pad out the records.  Theres 4 bytes for each track
+	unsigned long notPresent = 0;
+	for (unsigned int a = 0; a <168; a++) {
+		try {
+			hADFFile.write((const char*)&notPresent, sizeof(notPresent));
+		} catch (...) {
+			hADFFile.close();
+			return ADFResult::adfrFileIOError;
+		}
+	}
+
+	RotationExtractor extractor;
+	extractor.setAlwaysUseIndex(true);
+	RotationExtractor::MFMSample samples[RAW_TRACKDATA_LENGTH];
+
+	// Do all tracks
+	for (unsigned int currentTrack = 0; currentTrack < numTracks; currentTrack++) {
+
+		// Select the track we're working on
+		if (m_device.selectTrack(currentTrack) != DiagnosticResponse::drOK) {
+			hADFFile.close();
+			return ADFResult::adfrCompletedWithErrors;
+		}
+
+		// Now select the side
+		for (unsigned int surfaceIndex = 0; surfaceIndex < 2; surfaceIndex++) {
+			// Surface 
+			const DiskSurface surface = (surfaceIndex == 1) ? DiskSurface::dsUpper : DiskSurface::dsLower;
+			track.revolution.clear();
+			track.revolutionData.clear();
+			track.header.trackNumber = (currentTrack * 2) + surfaceIndex;
+
+			// Change the surface we're looking at
+			if (m_device.selectSurface(surface) != DiagnosticResponse::drOK) {
+				hADFFile.close();
+				return ADFResult::adfrCompletedWithErrors;
+			}
+
+			if (callback) {
+				switch (callback(currentTrack, surface, 0, 0, 0)) {
+				case WriteResponse::wrContinue: break;  // do nothing
+				case WriteResponse::wrAbort:    hADFFile.close();
+												return ADFResult::adfrAborted;
+				default: break;
+				}
+			}
+
+			// Read in the data in 'raw' mode
+			RotationExtractor::IndexSequenceMarker startPatterns;
+			SCPTrackRevolution currentRev;
+			currentRev.indexTime = 0;
+			currentRev.trackLength = 0;
+
+			SCPTrackData currentRevData;
+
+			if (m_device.readRotation(extractor, RAW_TRACKDATA_LENGTH, samples, startPatterns, [this, &track, &currentRev, &currentRevData, revolutions](RotationExtractor::MFMSample** _mfmData, unsigned int dataLengthInBits)->bool {
+				RotationExtractor::MFMSample* mfmData = *_mfmData;
+				unsigned int currentTime = 0;
+				unsigned int numBits = 0;
+
+				for (unsigned int a = 0; a < dataLengthInBits; a++) {
+					const unsigned int bit = 7 - (a & 7);
+
+					currentTime += (unsigned int)mfmData->bittime[bit];
+					numBits++;
+
+					// Bit found?
+					if (mfmData->mfmData & (1 << bit)) {
+
+						// Convert to 25ns times
+						currentTime /= 25;
+
+						// Keep track of time
+						currentRev.indexTime += currentTime; 
+
+						// Handle data too big
+						while (currentTime > 65535) {
+							currentRevData.push_back(0);
+							currentTime -= 65536;
+						}
+
+						// Save
+						currentRevData.push_back((unsigned short)(((currentTime & 0xFF) << 8) | ((currentTime >> 8) & 0xFF)));
+						currentRev.trackLength++;
+
+						// Reset
+						numBits = 0;
+						currentTime = 0;
+					}
+					
+					// Skip to next bit of data
+					if (bit == 0) mfmData++;
+				}
+
+				track.revolution.push_back(currentRev);
+				track.revolutionData.push_back(currentRevData);
+
+				currentRev.indexTime = 0;
+				currentRev.trackLength = 0;
+				currentRevData.clear();
+
+				// Stop when we have enough data
+				return track.revolution.size() < revolutions;
+
+			}) != DiagnosticResponse::drOK) {
+				hADFFile.close();
+				return ADFResult::adfrDriveError;
+			}
+
+			// Get the current position
+			unsigned long currentPosition = (unsigned long)hADFFile.tellp();
+
+			// Move to the beginning of the file, and write the offset for where this starts
+			hADFFile.seekp(sizeof(header) + (track.header.trackNumber * 4), std::fstream::beg);
+			try {
+				hADFFile.write((const char*)&currentPosition, 4);
+			} catch (...) {
+				hADFFile.close();
+				return ADFResult::adfrFileIOError;
+			}
+
+			// Restore position and save data
+			hADFFile.seekp(currentPosition, std::fstream::beg);
+
+			// Write the header
+			try {
+				hADFFile.write((const char*)&track.header, sizeof(track.header));
+			} catch (...) {
+				hADFFile.close();
+				return ADFResult::adfrFileIOError;
+			}
+
+			// Write out the revolution headers
+			unsigned int dataPos = sizeof(track.header) + (track.revolution.size() * sizeof(SCPTrackRevolution));
+			for (unsigned int a = 0; a < track.revolution.size(); a++) {
+				track.revolution[a].dataOffset = dataPos;
+				try {
+					hADFFile.write((const char*)&track.revolution[a], sizeof(track.revolution[a]));
+				} catch (...) {
+					hADFFile.close();
+					return ADFResult::adfrFileIOError;
+				}
+				dataPos += track.revolutionData[a].size() * 2;
+			}
+
+			// Now write out the data
+			for (unsigned int a = 0; a < track.revolutionData.size(); a++) {
+				try {
+					hADFFile.write((const char*)track.revolutionData[a].data(), track.revolutionData[a].size() * 2);
+				} catch (...) {
+					hADFFile.close();
+					return ADFResult::adfrFileIOError;
+				}
+			}
+		}
+	}
+
+	// Compute the checksum
+	hADFFile.seekg(sizeof(header), std::fstream::beg);
+	unsigned int buffer[128];
+	
+	while (hADFFile.good()) {
+		try {
+			hADFFile.read((char*)buffer, sizeof(buffer));
+			const unsigned long read = sizeof(buffer) / 4;
+			for (size_t pos = 0; pos < read; pos++)
+				header.checksum += buffer[pos];
+		}
+		catch (...) {			
+		}		
+	}
+	hADFFile.clear();
+	hADFFile.seekp(0, std::fstream::beg);
+
+	// Write the header again with the checksum in it
+	try {
+		hADFFile.write((const char*)&header, sizeof(header));
+	} catch (...) {
+		hADFFile.close();
+		return ADFResult::adfrFileIOError;
+	}
+
+	hADFFile.close();
+
+	return ADFResult::adfrComplete;
+}
+
+
 // Reads the disk and write the data to the ADF file supplied.  The callback is for progress, and you can returns FALSE to abort the process
-ADFResult ADFWriter::DiskToADF(const std::wstring outputFile, const unsigned int numTracks, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound)> callback) {
+ADFResult ADFWriter::DiskToADF(const std::wstring& outputFile, const unsigned int numTracks, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound)> callback) {
 	if (!m_device.isOpen()) return ADFResult::adfrDriveError;
 
 	// Higher than this is not supported
 	if (numTracks>82) return ADFResult::adfrDriveError; 
 
 	// Attempt ot open the file
-	HANDLE hADFFile = CreateFile(outputFile.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, 0);
-	if (hADFFile ==INVALID_HANDLE_VALUE) return ADFResult::adfrFileError;
+#ifdef _WIN32	
+	std::ofstream hADFFile = std::ofstream(outputFile, std::ofstream::out | std::ofstream::binary | std::ofstream::trunc);
+#else
+	std::string outputFileA;
+	quickw2a(outputFile,outputFileA);
+	std::ofstream hADFFile = std::ofstream(outputFileA, std::ofstream::out | std::ofstream::binary | std::ofstream::trunc);
+#endif	
+	if (!hADFFile.is_open()) return ADFResult::adfrFileError;
 
 	// To hold a raw track
 	RawTrackData data;
@@ -1045,10 +1435,10 @@ ADFResult ADFWriter::DiskToADF(const std::wstring outputFile, const unsigned int
 
 		// Select the track we're working on
 		if (m_device.selectTrack(currentTrack) != DiagnosticResponse::drOK) {
-			CloseHandle(hADFFile);
+			hADFFile.close();
 			return ADFResult::adfrCompletedWithErrors;
 		}
-
+		
 		// Now select the side
 		for (unsigned int surfaceIndex = 0; surfaceIndex < 2; surfaceIndex++) {
 			// Surface 
@@ -1056,7 +1446,7 @@ ADFResult ADFWriter::DiskToADF(const std::wstring outputFile, const unsigned int
 
 			// Change the surface we're looking at
 			if (m_device.selectSurface(surface) != DiagnosticResponse::drOK) {
-				CloseHandle(hADFFile);
+				hADFFile.close();
 				return ADFResult::adfrCompletedWithErrors;
 			}
 
@@ -1069,7 +1459,6 @@ ADFResult ADFWriter::DiskToADF(const std::wstring outputFile, const unsigned int
 			// Extract phase code
 			int failureTotal = 0;
 			bool ignoreChecksums = false;
-			unsigned int totalFails = 0;
 
 			// Repeat until we have all 11 sectors
 			while (track.validSectors.size() < NUM_SECTORS_PER_TRACK) {
@@ -1079,10 +1468,21 @@ ADFResult ADFWriter::DiskToADF(const std::wstring outputFile, const unsigned int
 					for (unsigned int sector = 0; sector < NUM_SECTORS_PER_TRACK; sector++)
 						if (track.invalidSectors[sector].size()) total++;
 
+					if ((failureTotal%6)==5) {
+						// simulate what the Amiga kinda sounded like it was doing by re-seeking to the track.  This sometimes fixes it, weird eh, and sounds cool
+						if (currentTrack < 40) {
+							m_device.selectTrack(currentTrack+30, ArduinoFloppyReader::TrackSearchSpeed::tssSlow);
+						}
+						else {
+							m_device.selectTrack(currentTrack-30, ArduinoFloppyReader::TrackSearchSpeed::tssSlow);
+						}
+						m_device.selectTrack(currentTrack);
+					}
+
 					switch (callback(currentTrack, surface, failureTotal, track.validSectors.size(), total)) {
 						case WriteResponse::wrContinue: break;  // do nothing
 						case WriteResponse::wrRetry:    failureTotal = 0; break;
-						case WriteResponse::wrAbort:    CloseHandle(hADFFile);
+						case WriteResponse::wrAbort:    hADFFile.close();
 														return ADFResult::adfrAborted;
 
 						case WriteResponse::wrSkipBadChecksums: 
@@ -1107,19 +1507,17 @@ ADFResult ADFWriter::DiskToADF(const std::wstring outputFile, const unsigned int
 					}
 				}
 
-				// Read and process
 				if (m_device.readCurrentTrack(data, false) == DiagnosticResponse::drOK) {
 					findSectors(data, currentTrack, surface, AMIGA_WORD_SYNC, track, ignoreChecksums);
 					failureTotal++;
 				}
 				else {
-					CloseHandle(hADFFile);
+					hADFFile.close();
 					return ADFResult::adfrDriveError;
 				}
-				
+
 				// If the user wants to skip invalid sectors and save them
 				if (ignoreChecksums) {
-					int total = 0;
 					for (unsigned int sector = 0; sector < NUM_SECTORS_PER_TRACK; sector++)
 						if (track.invalidSectors[sector].size()) {
 							includesBadSectors = true;
@@ -1135,16 +1533,19 @@ ADFResult ADFWriter::DiskToADF(const std::wstring outputFile, const unsigned int
 			});
 
 			// Now write all of them to disk
-			DWORD written;
-			for (unsigned int sector = 0; sector < 11; sector++)
-				if (!WriteFile(hADFFile, track.validSectors[sector].data, 512, &written, 0)) {
-					CloseHandle(hADFFile);
+			for (unsigned int sector = 0; sector < 11; sector++) {
+				try {
+					hADFFile.write((const char*)track.validSectors[sector].data, 512);
+				}
+				catch (...) {
+					hADFFile.close();
 					return ADFResult::adfrFileIOError;
 				}
+			}
 		}
 	}
 
-	CloseHandle(hADFFile);
+	hADFFile.close();
 
 	return includesBadSectors ? ADFResult::adfrCompletedWithErrors : ADFResult::adfrComplete;
 }

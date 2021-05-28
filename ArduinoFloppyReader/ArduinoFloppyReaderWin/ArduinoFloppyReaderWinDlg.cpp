@@ -1,6 +1,6 @@
 /* ArduinoFloppyReaderWin
 *
-* Copyright (C) 2017-2020 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2021 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This program is free software; you can redistribute it and/or
@@ -30,7 +30,6 @@
 #include "..\lib\ADFWriter.h"
 #include <Windows.h>
 
-
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #endif
@@ -44,12 +43,12 @@ class CAboutDlg : public CDialogEx
 public:
 	CAboutDlg() : CDialogEx(IDD_ABOUTBOX) {};
 
-// Dialog Data
+	// Dialog Data
 #ifdef AFX_DESIGN_TIME
 	enum { IDD = IDD_ABOUTBOX };
 #endif
-	protected:
-		virtual void DoDataExchange(CDataExchange* pDX) { CDialogEx::DoDataExchange(pDX); };
+protected:
+	virtual void DoDataExchange(CDataExchange* pDX) { CDialogEx::DoDataExchange(pDX); };
 
 protected:
 	DECLARE_MESSAGE_MAP()
@@ -60,7 +59,6 @@ END_MESSAGE_MAP()
 
 #pragma endregion ABOUT_DIALOG
 
-   
 
 #pragma region DIAGNOSTICS_DIALOG
 
@@ -68,7 +66,7 @@ END_MESSAGE_MAP()
 class CDiagnosticsDialog : public CDialogEx
 {
 public:
-	CDiagnosticsDialog(int comPort) : CDialogEx(IDD_DIAGNOSTICS), m_comPort(comPort), m_mainThread(nullptr) {};
+	CDiagnosticsDialog(const std::wstring& comport) : CDialogEx(IDD_DIAGNOSTICS), m_comPort(comport), m_mainThread(nullptr) {};
 	virtual ~CDiagnosticsDialog() {
 		if (m_mainThread) {
 			if (m_mainThread->joinable()) m_mainThread->join();
@@ -86,29 +84,29 @@ public:
 
 protected:
 	virtual void DoDataExchange(CDataExchange* pDX) {
-		CDialogEx::DoDataExchange(pDX); 
+		CDialogEx::DoDataExchange(pDX);
 		DDX_Control(pDX, IDC_EDIT1, m_results);
 	};
-													
 
-	BOOL OnInitDialog() 
+
+	BOOL OnInitDialog()
 	{
 		CDialogEx::OnInitDialog();
 		m_threadRunning = true;
-		
+
 		WCHAR buffer[200];
-		swprintf_s(buffer, L"Running Diagnostics on COM %i", m_comPort);
+		swprintf_s(buffer, L"Running Diagnostics on %s", m_comPort.c_str());
 		SetWindowText(buffer);
 
 		CMenu* mnu = this->GetSystemMenu(FALSE);
 		mnu->EnableMenuItem(SC_CLOSE, MF_BYCOMMAND | MF_GRAYED | MF_DISABLED);
-	
+
 		// Main processing thread
 		m_mainThread = new std::thread([this]()->void {
 			runDiagnostics();
 			m_threadRunning = false;
-		});
-		
+			});
+
 		return true;
 	}
 
@@ -116,7 +114,7 @@ protected:
 	DECLARE_MESSAGE_MAP()
 
 private:
-	int m_comPort;
+	const std::wstring m_comPort;
 	bool m_threadRunning = true;
 	ArduinoFloppyReader::ADFWriter writer;
 	std::thread* m_mainThread;
@@ -126,7 +124,7 @@ private:
 		writer.runDiagnostics(m_comPort, [this](bool isError, const std::string message)->void {
 			CString strLine;
 
-			if (isError) strLine = "DIAGNOSTICS FAILED: "; 
+			if (isError) strLine = "DIAGNOSTICS FAILED: ";
 			strLine += message.c_str();
 			strLine += "\r\n";
 
@@ -137,12 +135,12 @@ private:
 			// replace the selection
 			m_results.ReplaceSel(strLine);
 
-		}, [this](bool isQuestion, const std::string question)->bool {
-			if (isQuestion) 
-				return MessageBoxA(GetSafeHwnd(),(LPCSTR)question.c_str(), "Diagnostics Question", MB_YESNO | MB_ICONQUESTION) == IDYES;
-			else 
-				return MessageBoxA(GetSafeHwnd(), (LPCSTR)question.c_str(), "Diagnostics Prompt", MB_OKCANCEL | MB_ICONINFORMATION) == IDOK;
-		});
+			}, [this](bool isQuestion, const std::string question)->bool {
+				if (isQuestion)
+					return MessageBoxA(GetSafeHwnd(), (LPCSTR)question.c_str(), "Diagnostics Question", MB_YESNO | MB_ICONQUESTION) == IDYES;
+				else
+					return MessageBoxA(GetSafeHwnd(), (LPCSTR)question.c_str(), "Diagnostics Prompt", MB_OKCANCEL | MB_ICONINFORMATION) == IDOK;
+			});
 
 		writer.closeDevice();
 
@@ -181,7 +179,7 @@ private:
 	void* m_sfx;
 	HBITMAP m_currentBitmap;
 public:
-	CCompleteDialog(void* sfx, bool partial, bool writeMode);
+	CCompleteDialog(void* sfx, bool partial, bool writeMode, bool SCPMode);
 	virtual ~CCompleteDialog();
 
 	// Dialog Data
@@ -193,7 +191,7 @@ protected:
 	virtual BOOL OnInitDialog();
 	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV support
 	LRESULT OnNcHitTest(CPoint point);
-														// Implementation
+	// Implementation
 protected:
 	DECLARE_MESSAGE_MAP()
 public:
@@ -206,13 +204,14 @@ CCompleteDialog::~CCompleteDialog() {
 	if (m_currentBitmap) DeleteObject(m_currentBitmap);
 }
 
-CCompleteDialog::CCompleteDialog(void* sfx, bool partial, bool writeMode) : CDialogEx(IDD_DIALOG)
+CCompleteDialog::CCompleteDialog(void* sfx, bool partial, bool writeMode, bool SCPMode) : CDialogEx(IDD_DIALOG)
 {
 	m_sfx = sfx;
 	int id;
-	if (writeMode)
-		id = partial ? IDB_DIALOG_WARNING_WRITE : IDB_DIALOG_OK_WRITE;
-	else id = partial ? IDB_DIALOG_WARNING : IDB_DIALOG_OK;
+	if (SCPMode) id = IDB_SCPREAD; else
+		if (writeMode)
+			id = partial ? IDB_DIALOG_WARNING_WRITE : IDB_DIALOG_OK_WRITE;
+		else id = partial ? IDB_DIALOG_WARNING : IDB_DIALOG_OK;
 	m_currentBitmap = LoadBitmap(AfxGetInstanceHandle(), MAKEINTRESOURCE(id));
 }
 
@@ -235,7 +234,7 @@ INT_PTR CCompleteDialog::DoModal()
 	return CDialogEx::DoModal();
 }
 
-LRESULT CCompleteDialog::OnNcHitTest(CPoint point) 
+LRESULT CCompleteDialog::OnNcHitTest(CPoint point)
 {
 	CPoint pt = point;
 	ScreenToClient(&pt);
@@ -251,6 +250,7 @@ END_MESSAGE_MAP()
 #pragma endregion COMPLETE_DIALOG
 
 #pragma region MAIN_DIALOG
+
 
 // CArduinoFloppyReaderWinDlg dialog
 CArduinoFloppyReaderWinDlg::CArduinoFloppyReaderWinDlg(CWnd* pParent /*=NULL*/)
@@ -273,18 +273,20 @@ void CArduinoFloppyReaderWinDlg::DoDataExchange(CDataExchange* pDX)
 	DDX_Control(pDX, IDC_BROWSE, m_browseButton);
 	DDX_Control(pDX, IDC_STARTSTOP, m_copyButton);
 	DDX_Control(pDX, IDC_STATUS, m_statusText);
-	DDX_Control(pDX, IDC_SPIN2, m_spinner);
 	DDX_Control(pDX, IDC_FILENAME2, m_inputADF);
 	DDX_Control(pDX, IDC_BROWSE2, m_browseButton2);
 	DDX_Control(pDX, IDC_STARTSTOP2, m_writeButton);
 	DDX_Control(pDX, IDC_CHECK1, m_verify);
+	DDX_Control(pDX, IDC_CHECK3, m_precomp);
 	DDX_Control(pDX, IDC_STARTSTOP3, m_diagnostics);
-	DDX_Control(pDX, IDC_ERASE, m_erase);
+	DDX_Control(pDX, IDC_DISKFORMAT, m_fileFormat);
+	DDX_Control(pDX, IDC_TRK80, m_trk80);
+	DDX_Control(pDX, IDC_TRK82, m_trk82);
 }
 
 BEGIN_MESSAGE_MAP(CArduinoFloppyReaderWinDlg, CDialogEx)
 	ON_WM_SYSCOMMAND()
-	ON_WM_PAINT()	
+	ON_WM_PAINT()
 	ON_WM_QUERYDRAGICON()
 	ON_BN_CLICKED(IDC_STARTSTOP, &CArduinoFloppyReaderWinDlg::OnBnClickedStartstop)
 	ON_BN_CLICKED(IDC_BROWSE, &CArduinoFloppyReaderWinDlg::OnBnClickedBrowse)
@@ -292,10 +294,20 @@ BEGIN_MESSAGE_MAP(CArduinoFloppyReaderWinDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_BROWSE2, &CArduinoFloppyReaderWinDlg::OnBnClickedBrowse2)
 	ON_BN_CLICKED(IDC_STARTSTOP2, &CArduinoFloppyReaderWinDlg::OnBnClickedStartstop2)
 	ON_BN_CLICKED(IDC_STARTSTOP3, &CArduinoFloppyReaderWinDlg::OnBnClickedStartstop3)
+	ON_MESSAGE(WM_DEVICECHANGE, &CArduinoFloppyReaderWinDlg::OnDevicechange)
 END_MESSAGE_MAP()
 
 
 // CArduinoFloppyReaderWinDlg message handlers
+
+void CArduinoFloppyReaderWinDlg::enumComPorts() {
+	std::vector<std::wstring> portList;
+	ArduinoFloppyReader::ArduinoInterface::enumeratePorts(portList);
+
+	m_comport.ResetContent();
+	for (const std::wstring& port : portList)
+		m_comport.AddString(port.c_str());
+}
 
 BOOL CArduinoFloppyReaderWinDlg::OnInitDialog()
 {
@@ -326,14 +338,33 @@ BOOL CArduinoFloppyReaderWinDlg::OnInitDialog()
 	SetIcon(m_hIcon, TRUE);			// Set big icon
 	SetIcon(m_hIcon, FALSE);		// Set small icon
 
+	enumComPorts();
+
 	WCHAR buf[10];
+	buf[0] = '\0';
 	LONG len = 10;
-	memset(buf, 0, len*2);
+	memset(buf, 0, len * 2);
 	RegQueryValueW(HKEY_CURRENT_USER, L"Software\\ArduinoFloppyReader\\ComPort", buf, &len);
-	if ((len)&&(wcslen(buf))) {
-		m_comport.SetWindowTextW(buf);
-	} else m_comport.SetWindowTextW(L"1");
-	
+	int port = wcstol(buf, nullptr, 10);
+	swprintf_s(buf, L"COM%i", port);
+	setComPort(buf);
+
+	m_fileFormat.AddString(L"ADF");
+	m_fileFormat.AddString(L"SCP");
+	buf[0] = '\0';
+	len = 10;
+	RegQueryValueW(HKEY_CURRENT_USER, L"Software\\ArduinoFloppyReader\\fileFormat", buf, &len);
+	int index = wcstol(buf, nullptr, 10);
+	m_fileFormat.SetCurSel(index);
+
+	buf[0] = '\0';
+	len = 10;
+	RegQueryValueW(HKEY_CURRENT_USER, L"Software\\ArduinoFloppyReader\\tracks", buf, &len);
+	int numTracks = wcstol(buf, nullptr, 10);
+	m_trk82.SetCheck(numTracks == 82);
+	m_trk80.SetCheck(numTracks != 82);
+
+
 	HRSRC res = FindResource(NULL, MAKEINTRESOURCE(IDR_COMPLETE), L"WAVE");
 	m_sfx = nullptr;
 	if (res) {
@@ -350,12 +381,29 @@ BOOL CArduinoFloppyReaderWinDlg::OnInitDialog()
 		}
 		FreeResource(resource);
 	}
-	m_spinner.SetRange(1, 999);
+	m_precomp.SetCheck(TRUE);
 	m_verify.SetCheck(TRUE);
-	m_erase.SetCheck(TRUE);
+
 
 	return TRUE;  // return TRUE  unless you set the focus to a control
 }
+
+std::wstring CArduinoFloppyReaderWinDlg::getComPort() {
+	int index = m_comport.GetCurSel();
+	if (index < 0) return L"";
+	CString buf;
+
+	m_comport.GetWindowTextW(buf);
+
+	return std::wstring(buf);
+}
+
+void CArduinoFloppyReaderWinDlg::setComPort(const std::wstring& comport) {
+	int index = m_comport.FindString(0, comport.c_str());
+	if (index < 0) index = 0;
+	m_comport.SetCurSel(index);
+}
+
 
 CArduinoFloppyReaderWinDlg::~CArduinoFloppyReaderWinDlg() {
 	m_cancelButtonPressed = true;
@@ -416,10 +464,9 @@ HCURSOR CArduinoFloppyReaderWinDlg::OnQueryDragIcon()
 bool CArduinoFloppyReaderWinDlg::runThreadRead() {
 	ArduinoFloppyReader::ADFWriter writer;
 
-	CString tmpText;
-	m_comport.GetWindowText(tmpText);
-	unsigned int comPort = _ttoi(tmpText);
-	
+	const std::wstring comPort = getComPort();
+	bool isSCP = m_fileFormat.GetCurSel() == 1;
+
 	// Try to open the com port and talk to the device
 	m_statusText.SetWindowText(L"Opening COM port and setting up device...");
 	if (!writer.openDevice(comPort)) {
@@ -429,55 +476,72 @@ bool CArduinoFloppyReaderWinDlg::runThreadRead() {
 		return false;
 	}
 
+	// Get the current firmware version.  Only valid if openDevice is successful
+	const ArduinoFloppyReader::FirmwareVersion v = writer.getFirwareVersion();
+	if ((v.major == 1) && (v.minor < 8)) {
+		static bool hasBeenWarnedAboutVersion = false;
+		// improved disk timings in 1.8, so make them aware
+		if (!hasBeenWarnedAboutVersion) {
+			hasBeenWarnedAboutVersion = true;
+			MessageBox(L"Rob strongly recommends updating the firmware on your Arduino to at least V1.8.\nThat version is even better at reading old disks.", L"Firmware Upgrade Note", MB_OK | MB_ICONINFORMATION);
+		}
+	}
+
 	// Analysis was complete and found some data.  Run the reader
-	m_statusText.SetWindowText(L"Reading disk to ADF file...");
+	m_statusText.SetWindowText(isSCP ? L"Reading disk to SCP file..." : L"Reading disk to ADF file...");
 	CString filename;
-	const unsigned int lastTrack = 80;
-	m_progressbar.SetRange(0, lastTrack*2);
+	const unsigned int lastTrack = m_trk82.GetCheck() ? 82 : 80;
+	m_progressbar.SetRange(0, lastTrack * 2);
 	m_progressbar.SetPos(0);
 
-	m_outputADF.GetWindowText(filename);
-	ArduinoFloppyReader::ADFResult readerResult = writer.DiskToADF(filename.GetBuffer(), lastTrack,
-		 [this](const int currentTrack, const ArduinoFloppyReader::DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound) -> ArduinoFloppyReader::WriteResponse {
-		
-		 if (m_cancelButtonPressed) return ArduinoFloppyReader::WriteResponse::wrAbort;
+	auto callback = [this](const int currentTrack, const ArduinoFloppyReader::DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound) -> ArduinoFloppyReader::WriteResponse {
 
-		 CString str;
-		 str.Format(L"%i", currentTrack);
-		 m_statusTrack.SetWindowText(str);
-		 m_statusSide.SetWindowText((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper) ? L"Upper" : L"Lower");
-		 str.Format(L"%i", sectorsFound);
-		 m_statusGood.SetWindowText(str);
-		 str.Format(L"%i", badSectorsFound);
-		 m_statusPartial.SetWindowText(str);
+		if (m_cancelButtonPressed) return ArduinoFloppyReader::WriteResponse::wrAbort;
 
-		 m_progressbar.SetPos((currentTrack*2)+((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper)?1:0));
+		CString str;
+		str.Format(L"%i", currentTrack);
+		m_statusTrack.SetWindowText(str);
+		m_statusSide.SetWindowText((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper) ? L"Upper" : L"Lower");
+		str.Format(L"%i", sectorsFound);
+		m_statusGood.SetWindowText(str);
+		str.Format(L"%i", badSectorsFound);
+		m_statusPartial.SetWindowText(str);
 
-		 if (retryCounter > 20) {
-			 switch (MessageBox(L"Disk has checksum errors/missing/damaged data.\r\n\r\n", L"Disk Read Errors", MB_ABORTRETRYIGNORE)) {
-				 case IDABORT: return ArduinoFloppyReader::WriteResponse::wrAbort;
-				 case IDRETRY: return ArduinoFloppyReader::WriteResponse::wrRetry;
-				 case IDIGNORE: return ArduinoFloppyReader::WriteResponse::wrSkipBadChecksums;				 
-			 }
+		m_progressbar.SetPos((currentTrack * 2) + ((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper) ? 1 : 0));
+
+		if (retryCounter > 20) {
+			switch (MessageBox(L"Disk has checksum errors/missing/damaged data.\r\n\r\n", L"Disk Read Errors", MB_ABORTRETRYIGNORE)) {
+			case IDABORT: return ArduinoFloppyReader::WriteResponse::wrAbort;
+			case IDRETRY: return ArduinoFloppyReader::WriteResponse::wrRetry;
+			case IDIGNORE: return ArduinoFloppyReader::WriteResponse::wrSkipBadChecksums;
+			}
 		}
-		
+
 		// Just continue
 		return ArduinoFloppyReader::WriteResponse::wrContinue;
-	});
+	};
+
+	m_outputADF.GetWindowText(filename);
+
+	ArduinoFloppyReader::ADFResult readerResult;
+
+
+	readerResult = isSCP ? writer.DiskToSCP(filename.GetBuffer(), lastTrack, 3, callback) : writer.DiskToADF(filename.GetBuffer(), lastTrack, callback);
 
 	// Handle the result
 	switch (readerResult) {
-		case ArduinoFloppyReader::ADFResult::adfrComplete:					m_partial = false;  return true;
-		case ArduinoFloppyReader::ADFResult::adfrAborted:					return false;
-		case ArduinoFloppyReader::ADFResult::adfrFileError:					MessageBox(L"Unable to open the specified file to write to it.", L"Output File Error", MB_OK | MB_ICONEXCLAMATION); return false;
-		case ArduinoFloppyReader::ADFResult::adfrFileIOError:				MessageBox(L"An error occured writing to the specified file.", L"Output File Error", MB_OK | MB_ICONEXCLAMATION); return false;
-		case ArduinoFloppyReader::ADFResult::adfrCompletedWithErrors:		m_partial = true; return true;
-		case ArduinoFloppyReader::ADFResult::adfrDriveError:				{
-			std::string msg = "An error occured communicating with the Arduino interface:\r\n\r\n";
-			msg += writer.getLastError();
-			MessageBoxA(GetSafeHwnd(), msg.c_str(), "I/O Error", MB_OK | MB_ICONEXCLAMATION);
-			return false;
-		}
+	case ArduinoFloppyReader::ADFResult::adfrComplete:					m_partial = false;  return true;
+	case ArduinoFloppyReader::ADFResult::adfrAborted:					return false;
+	case ArduinoFloppyReader::ADFResult::adfrFileError:					MessageBox(L"Unable to open the specified file to write to it.", L"Output File Error", MB_OK | MB_ICONEXCLAMATION); return false;
+	case ArduinoFloppyReader::ADFResult::adfrFileIOError:				MessageBox(L"An error occured writing to the specified file.", L"Output File Error", MB_OK | MB_ICONEXCLAMATION); return false;
+	case ArduinoFloppyReader::ADFResult::adfrFirmwareTooOld:			MessageBox(L"This requires firmware V1.8 or newer.", L"Firmware out of date", MB_OK | MB_ICONEXCLAMATION); return false;
+	case ArduinoFloppyReader::ADFResult::adfrCompletedWithErrors:		m_partial = true; return true;
+	case ArduinoFloppyReader::ADFResult::adfrDriveError: {
+		std::string msg = "An error occured communicating with the Arduino interface:\r\n\r\n";
+		msg += writer.getLastError();
+		MessageBoxA(GetSafeHwnd(), msg.c_str(), "I/O Error", MB_OK | MB_ICONEXCLAMATION);
+		return false;
+	}
 	}
 
 	return false;
@@ -489,9 +553,7 @@ bool CArduinoFloppyReaderWinDlg::runThreadRead() {
 bool CArduinoFloppyReaderWinDlg::runThreadWrite() {
 	ArduinoFloppyReader::ADFWriter writer;
 
-	CString tmpText;
-	m_comport.GetWindowText(tmpText);
-	unsigned int comPort = _ttoi(tmpText);
+	const std::wstring comPort = getComPort();
 
 	// Try to open the com port and talk to the device
 	m_statusText.SetWindowText(L"Opening COM port and setting up device...");
@@ -510,30 +572,30 @@ bool CArduinoFloppyReaderWinDlg::runThreadWrite() {
 	m_progressbar.SetPos(0);
 
 	m_inputADF.GetWindowText(filename);
-	
-	ArduinoFloppyReader::ADFResult readerResult = writer.ADFToDisk(filename.GetBuffer(), m_erase.GetCheck()!=0, m_verify.GetCheck()!=0,
+
+	ArduinoFloppyReader::ADFResult readerResult = writer.ADFToDisk(filename.GetBuffer(), m_verify.GetCheck() != 0, m_precomp.GetCheck() != 0,
 		[this](const int currentTrack, const ArduinoFloppyReader::DiskSurface currentSide, const bool isVerifyError) -> ArduinoFloppyReader::WriteResponse {
 
-		if (m_cancelButtonPressed) return ArduinoFloppyReader::WriteResponse::wrAbort;
+			if (m_cancelButtonPressed) return ArduinoFloppyReader::WriteResponse::wrAbort;
 
-		CString str;
-		str.Format(L"%i", currentTrack);
-		m_statusTrack.SetWindowText(str);
-		m_statusSide.SetWindowText((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper) ? L"Upper" : L"Lower");
+			CString str;
+			str.Format(L"%i", currentTrack);
+			m_statusTrack.SetWindowText(str);
+			m_statusSide.SetWindowText((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper) ? L"Upper" : L"Lower");
 
-		m_progressbar.SetPos((currentTrack * 2) + ((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper) ? 1 : 0));
+			m_progressbar.SetPos((currentTrack * 2) + ((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper) ? 1 : 0));
 
-		if (isVerifyError) {
-			switch (MessageBox(L"Verify error writing track.", L"Disk Write Error", MB_ABORTRETRYIGNORE)) {
-			case IDABORT: return ArduinoFloppyReader::WriteResponse::wrAbort;
-			case IDRETRY: return ArduinoFloppyReader::WriteResponse::wrRetry;
-			case IDIGNORE: return ArduinoFloppyReader::WriteResponse::wrSkipBadChecksums;
+			if (isVerifyError) {
+				switch (MessageBox(L"Verify error writing track.", L"Disk Write Error", MB_ABORTRETRYIGNORE)) {
+				case IDABORT: return ArduinoFloppyReader::WriteResponse::wrAbort;
+				case IDRETRY: return ArduinoFloppyReader::WriteResponse::wrRetry;
+				case IDIGNORE: return ArduinoFloppyReader::WriteResponse::wrSkipBadChecksums;
+				}
 			}
-		}
 
-		// Just continue
-		return ArduinoFloppyReader::WriteResponse::wrContinue;
-	});
+			// Just continue
+			return ArduinoFloppyReader::WriteResponse::wrContinue;
+		});
 
 
 	switch (readerResult) {
@@ -542,11 +604,11 @@ bool CArduinoFloppyReaderWinDlg::runThreadWrite() {
 	case ArduinoFloppyReader::ADFResult::adfrAborted:					return false;
 	case ArduinoFloppyReader::ADFResult::adfrFileError:					MessageBox(L"Unable to open the specified file to read from it.", L"Input File Error", MB_OK | MB_ICONEXCLAMATION); return false;
 	case ArduinoFloppyReader::ADFResult::adfrDriveError: {
-			std::string msg = "An error occured communicating with the Arduino interface:\r\n\r\n";
-			msg += writer.getLastError();
-			MessageBoxA(GetSafeHwnd(), msg.c_str(), "I/O Error", MB_OK | MB_ICONEXCLAMATION); 
-			return false;
-		}
+		std::string msg = "An error occured communicating with the Arduino interface:\r\n\r\n";
+		msg += writer.getLastError();
+		MessageBoxA(GetSafeHwnd(), msg.c_str(), "I/O Error", MB_OK | MB_ICONEXCLAMATION);
+		return false;
+	}
 	case ArduinoFloppyReader::ADFResult::adfrDiskWriteProtected:		MessageBox(L"Unable to write to the disk.  Disk is write protected.", L"Write Protection Error", MB_OK | MB_ICONEXCLAMATION); return false;
 	}
 
@@ -572,8 +634,12 @@ void CArduinoFloppyReaderWinDlg::enableDialog(bool enable) {
 	m_inputADF.EnableWindow(enable);
 	m_comport.EnableWindow(enable);
 	m_verify.EnableWindow(enable);
-	m_erase.EnableWindow(enable);
+	m_precomp.EnableWindow(enable);
 	m_diagnostics.EnableWindow(enable);
+	m_fileFormat.EnableWindow(enable);
+	m_precomp.EnableWindow(enable);
+	m_trk80.EnableWindow(enable);
+	m_trk82.EnableWindow(enable);
 
 	if (enable) {
 		m_statusText.SetWindowText(L"Ready");
@@ -590,14 +656,14 @@ void CArduinoFloppyReaderWinDlg::enableDialog(bool enable) {
 // Called when the thread for reading ifinishes
 void CArduinoFloppyReaderWinDlg::threadFinishedReading(bool successful) {
 	enableDialog(true);
-	
+
 	if (successful) {
 		if (m_partial) {
-			CCompleteDialog dlg(m_sfx, true, false);
+			CCompleteDialog dlg(m_sfx, true, false, false);
 			dlg.DoModal();
 		}
 		else {
-			CCompleteDialog dlg(m_sfx, false, false);
+			CCompleteDialog dlg(m_sfx, false, false, m_fileFormat.GetCurSel() == 1);
 			dlg.DoModal();
 		}
 	}
@@ -613,11 +679,11 @@ void CArduinoFloppyReaderWinDlg::threadFinishedWriting(bool successful) {
 
 	if (successful) {
 		if (m_partial) {
-			CCompleteDialog dlg(m_sfx, true, true);
+			CCompleteDialog dlg(m_sfx, true, true, false);
 			dlg.DoModal();
 		}
 		else {
-			CCompleteDialog dlg(m_sfx, false, true);
+			CCompleteDialog dlg(m_sfx, false, true, false);
 			dlg.DoModal();
 		}
 	}
@@ -629,9 +695,19 @@ void CArduinoFloppyReaderWinDlg::threadFinishedWriting(bool successful) {
 
 // Save the comp port to the registry
 void CArduinoFloppyReaderWinDlg::saveComPort() {
-	CString port;
-	m_comport.GetWindowText(port);
-	RegSetValueW(HKEY_CURRENT_USER, L"Software\\ArduinoFloppyReader\\ComPort", REG_SZ, port.GetBuffer(), port.GetLength());	
+	const std::wstring port = getComPort();
+
+	char buffer[20];
+
+	if (port.length() > 3) {
+		RegSetValueW(HKEY_CURRENT_USER, L"Software\\ArduinoFloppyReader\\ComPort", REG_SZ, (LPCWSTR)&port[3], port.length()-3);
+	}
+
+	_itoa_s(m_fileFormat.GetCurSel(), buffer, 10);
+	RegSetValueA(HKEY_CURRENT_USER, "Software\\ArduinoFloppyReader\\fileFormat", REG_SZ, buffer, strlen(buffer));
+
+	_itoa_s(m_trk82.GetCheck() ? 82 : 80, buffer, 10);
+	RegSetValueA(HKEY_CURRENT_USER, "Software\\ArduinoFloppyReader\\tracks", REG_SZ, buffer, strlen(buffer));
 }
 
 // Disk to ADF file start and stop button
@@ -640,7 +716,7 @@ void CArduinoFloppyReaderWinDlg::OnBnClickedStartstop()
 	if (m_iothread) {
 		m_cancelButtonPressed = true;
 	}
-	else {		
+	else {
 		saveComPort();
 
 		CString filename;
@@ -658,7 +734,7 @@ void CArduinoFloppyReaderWinDlg::OnBnClickedStartstop()
 
 		m_iothread = new std::thread([this]() {
 			this->threadFinishedReading(this->runThreadRead());
-		});
+			});
 	}
 }
 
@@ -686,7 +762,7 @@ void CArduinoFloppyReaderWinDlg::OnBnClickedStartstop2()
 
 		m_iothread = new std::thread([this]() {
 			this->threadFinishedWriting(this->runThreadWrite());
-		});
+			});
 	}
 }
 
@@ -696,13 +772,16 @@ void CArduinoFloppyReaderWinDlg::OnBnClickedBrowse()
 {
 	// szFilters is a text string that includes two file name filters:
 	TCHAR szFilters[] = _T("Amiga Disk Files (*.adf)|*.adf|All Files (*.*)|*.*||");
+	TCHAR szFiltersSCP[] = _T("Supercard Pro Files (*.scp)|*.scp|All Files (*.*)|*.*||");
+
+	bool isSCP = m_fileFormat.GetCurSel() == 1;
 
 	// Create an Save dialog
 	CString oldFileName;
 	m_outputADF.GetWindowText(oldFileName);
 
-	CFileDialog fileDlg(FALSE, _T("adf"), oldFileName, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NODEREFERENCELINKS | OFN_ENABLESIZING | OFN_DONTADDTORECENT | OFN_EXPLORER, szFilters, this);
-	fileDlg.m_ofn.lpstrTitle = L"Save Disk to ADF File";
+	CFileDialog fileDlg(FALSE, isSCP ? _T("scp") : _T("adf"), oldFileName, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NODEREFERENCELINKS | OFN_ENABLESIZING | OFN_DONTADDTORECENT | OFN_EXPLORER, isSCP ? szFiltersSCP : szFilters, this);
+	if (isSCP) fileDlg.m_ofn.lpstrTitle = L"Save Disk to SCP File"; else fileDlg.m_ofn.lpstrTitle = L"Save Disk to ADF File";
 
 	// Display it
 	if (fileDlg.DoModal() == IDOK)
@@ -733,10 +812,18 @@ void CArduinoFloppyReaderWinDlg::OnBnClickedBrowse2()
 // The Run Diagnostics button
 void CArduinoFloppyReaderWinDlg::OnBnClickedStartstop3()
 {
-	CString tmpText;
-	m_comport.GetWindowText(tmpText);
-	unsigned int comPort = _ttoi(tmpText);
+	std::wstring comPort = getComPort();
+	saveComPort();
 
 	CDiagnosticsDialog dlgDiagnostics(comPort);
 	dlgDiagnostics.DoModal();
+}
+
+
+afx_msg LRESULT CArduinoFloppyReaderWinDlg::OnDevicechange(WPARAM wParam, LPARAM lParam)
+{
+	std::wstring port = getComPort();
+	enumComPorts();
+	setComPort(port);
+	return 0;
 }

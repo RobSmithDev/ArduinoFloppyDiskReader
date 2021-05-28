@@ -39,6 +39,10 @@ public:
 	bool m_cancelButtonPressed;
 	bool m_partial;
 
+	void enumComPorts();
+	std::wstring getComPort();
+	void setComPort(const std::wstring& comport);
+
 // Dialog Data
 #ifdef AFX_DESIGN_TIME
 	enum { IDD = IDD_ARDUINOFLOPPYREADERWIN_DIALOG };
@@ -65,7 +69,7 @@ public:
 
 	afx_msg LRESULT OnUserMessage(WPARAM wparam, LPARAM lparam);
 
-	CEdit m_comport;
+	CComboBox m_comport;
 	CEdit m_outputADF;
 	CProgressCtrl m_progressbar;
 	CStatic m_statusTrack;
@@ -75,11 +79,13 @@ public:
 	CButton m_browseButton;
 	CButton m_copyButton;
 	CStatic m_statusText;
-	CSpinButtonCtrl m_spinner;
 	CEdit m_inputADF;
 	CButton m_browseButton2;
 	CButton m_writeButton;
 	CButton m_verify;
+	CButton m_trk80;
+	CButton m_trk82;
+	CButton m_precomp;
 
 	// Main thread loop
 	bool runThreadRead();
@@ -91,5 +97,10 @@ public:
 	void saveComPort();
 	afx_msg void OnBnClickedStartstop3();
 	CButton m_diagnostics;
-	CButton m_erase;
+//	CButton m_precomp;
+	CComboBox m_fileFormat;
+protected:
+	afx_msg LRESULT OnDevicechange(WPARAM wParam, LPARAM lParam);
+public:
+
 };

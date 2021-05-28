@@ -1,6 +1,6 @@
 /* ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017-2020 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2021 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This program is free software; you can redistribute it and/or
@@ -21,10 +21,60 @@
 // Example console application for reading and writing floppy disks to and from ADF files //
 ////////////////////////////////////////////////////////////////////////////////////////////
 
-#include "stdafx.h"
-#include <windows.h>
-#include "..\lib\ADFWriter.h"
+#include "ADFWriter.h"
+#include "ArduinoInterface.h"
+#ifdef _WIN32
 #include <conio.h>
+#else
+#include <stdio.h>
+#include <termios.h>
+
+#ifndef _wcsupr
+#include <wctype.h>
+void _wcsupr(wchar_t* str) {
+	while (*str) {
+		*str = towupper(*str);
+		str++;
+	}
+}
+#endif
+static struct termios old, current;
+
+/* Initialize new terminal i/o settings */
+void initTermios(int echo) 
+{
+  tcgetattr(0, &old); /* grab old terminal i/o settings */
+  current = old; /* make new settings same as old settings */
+  current.c_lflag &= ~ICANON; /* disable buffered i/o */
+  if (echo) {
+      current.c_lflag |= ECHO; /* set echo mode */
+  } else {
+      current.c_lflag &= ~ECHO; /* set no echo mode */
+  }
+  tcsetattr(0, TCSANOW, &current); /* use these new terminal i/o settings now */
+}
+
+/* Restore old terminal i/o settings */
+void resetTermios(void) 
+{
+  tcsetattr(0, TCSANOW, &old);
+}
+
+char _getChar() 
+{
+  char ch;
+  initTermios(0);
+  ch = getchar();
+  resetTermios();
+  return ch;
+}
+
+std::wstring atw(const std::string& str) {
+	std::wstring ws(str.size(), L' '); 
+	ws.resize(::mbstowcs((wchar_t*)ws.data(), str.c_str(), str.size())); 
+	return ws;
+}
+#endif
 
 using namespace ArduinoFloppyReader;
 
@@ -32,16 +82,20 @@ ADFWriter writer;
 
 
 // Read an ADF file and write it to disk
-void adf2Disk(wchar_t* argv[], bool verify) {
+void adf2Disk(const std::wstring& filename, bool verify) {
 	printf("\nWrite disk from ADF mode\n\n");
 	if (!verify) printf("WARNING: It is STRONGLY recommended to write with verify support turned on.\r\n\r\n");
 
-	ADFResult result = writer.ADFToDisk(argv[2],true, verify, [](const int currentTrack, const DiskSurface currentSide, bool isVerifyError) ->WriteResponse {
+	ADFResult result = writer.ADFToDisk(filename,verify,true, [](const int currentTrack, const DiskSurface currentSide, bool isVerifyError) ->WriteResponse {
 		if (isVerifyError) {
 			char input;
 			do {
 				printf("\rDisk write verify error on track %i, %s side. [R]etry, [S]kip, [A]bort?                                   ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
-				input = toupper(getchar());
+#ifdef _WIN32
+				input = toupper(_getch());
+#else
+				input = toupper(_getChar());
+#endif	
 			} while ((input != 'R') && (input != 'S') && (input != 'A'));
 			
 			switch (input) {
@@ -51,6 +105,9 @@ void adf2Disk(wchar_t* argv[], bool verify) {
 			}
 		}
 		printf("\rWriting Track %i, %s side     ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
+#ifndef _WIN32
+		fflush(stdout);		
+#endif		
 		return WriteResponse::wrContinue;
 	});
 
@@ -62,19 +119,59 @@ void adf2Disk(wchar_t* argv[], bool verify) {
 	case ADFResult::adfrDriveError:					printf("\rError communicating with the Arduino interface.                                    "); 
 													printf("\n%s                                                  ", writer.getLastError().c_str()); break;
 	case ADFResult::adfrDiskWriteProtected:			printf("\rError, disk is write protected!                                                    "); break;
+	default:										printf("\rAn unknown error occured                                                           "); break;
 	}
 }
 
-// Read a disk and save it to ADF files
-void disk2ADF(wchar_t* argv[]) {
-	printf("\nCreate ADF from disk mode\n\n");
+// Stolen from https://stackoverflow.com/questions/11635/case-insensitive-string-comparison-in-c
+// A wide-string case insensative compare of strings
+bool iequals(const std::wstring& a, const std::wstring& b) {
+	return std::equal(a.begin(), a.end(),b.begin(), b.end(),[](wchar_t a, wchar_t b) {
+			return tolower(a) == tolower(b);
+	});
+}
+bool iequals(const std::string& a, const std::string& b) {
+	return std::equal(a.begin(), a.end(),b.begin(), b.end(),[](char a, char b) {
+			return tolower(a) == tolower(b);
+	});
+}
 
-	ADFResult result = writer.DiskToADF(argv[2], 80, [](const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound) ->WriteResponse {
+// Read a disk and save it to ADF or SCP files
+void disk2ADF(const std::wstring& filename) {
+	const wchar_t* extension = wcsrchr(filename.c_str(), L'.');
+	bool isADF = true;
+
+	if (extension) {
+		extension++;
+		isADF = !iequals(extension, L"SCP");
+	}
+
+	if (isADF) printf("\nCreate ADF from disk mode\n\n"); else printf("\nCreate SCP file from disk mode\n\n");
+
+	// Get the current firmware version.  Only valid if openDevice is successful
+	const ArduinoFloppyReader::FirmwareVersion v = writer.getFirwareVersion();
+	if ((v.major == 1) && (v.minor < 8)) {
+		if (!isADF) {
+			printf("This requires firmware V1.8 or newer.\n");
+			return;
+		}
+		else {
+			// improved disk timings in 1.8, so make them aware
+			printf("Rob strongly recommends updating the firmware on your Arduino to at least V1.8.\n");
+			printf("That version is even better at reading old disks.\n");
+		}
+	}
+
+	auto callback = [isADF](const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound) ->WriteResponse {
 		if (retryCounter > 20) {
 			char input;
 			do {
 				printf("\rDisk has checksum errors/missing data.  [R]etry, [I]gnore, [A]bort?                                      ");
-				input = toupper(getchar());
+#ifdef _WIN32
+				input = toupper(_getch());
+#else
+				input = toupper(_getChar());
+#endif	
 			} while ((input != 'R') && (input != 'I') && (input != 'A'));
 			switch (input) {
 			case 'R': return WriteResponse::wrRetry;
@@ -82,26 +179,40 @@ void disk2ADF(wchar_t* argv[]) {
 			case 'A': return WriteResponse::wrAbort;
 			}
 		}
-		printf("\rReading Track %i, %s side (retry: %i) - Got %i/11 sectors (%i bad found)   ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower", retryCounter, sectorsFound, badSectorsFound);
+		if (isADF) {
+			printf("\rReading Track %i, %s side (retry: %i) - Got %i/11 sectors (%i bad found)   ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower", retryCounter, sectorsFound, badSectorsFound);
+		}
+		else {
+			printf("\rReading Track %i, %s side   ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
+		}
+#ifndef _WIN32
+		fflush(stdout);		
+#endif		
 		return WriteResponse::wrContinue;
-	});
+	};
+
+	ADFResult result;
+	
+	if (isADF) result = writer.DiskToADF(filename, 80, callback); else result = writer.DiskToSCP(filename, 80, 3, callback);
 
 	switch (result) {
-	case ADFResult::adfrComplete:					printf("\rADF file created with valid checksums.                                             "); break;
-	case ADFResult::adfrAborted:					printf("\rADF file aborted.                                                                  "); break;
-	case ADFResult::adfrFileError:					printf("\rError creating ADF file.                                                           "); break;
-	case ADFResult::adfrFileIOError:				printf("\rError writing to ADF file.                                                         "); break;
-	case ADFResult::adfrCompletedWithErrors:		printf("\rADF file created with partial success.                                             "); break;
-	case ADFResult::adfrDriveError:					printf("\rError communicating with the Arduino interface.                                    ");
+	case ADFResult::adfrComplete:					printf("\rFile created successfully.                                                     "); break;
+	case ADFResult::adfrAborted:					printf("\rFile aborted.                                                                  "); break;
+	case ADFResult::adfrFileError:					printf("\rError creating file.                                                           "); break;
+	case ADFResult::adfrFileIOError:				printf("\rError writing to file.                                                         "); break;
+	case ADFResult::adfrFirmwareTooOld:			    printf("\rThis requires firmware V1.8 or newer.                                          "); break;
+	case ADFResult::adfrCompletedWithErrors:		printf("\rFile created with partial success.                                             "); break;
+	case ADFResult::adfrDriveError:					printf("\rError communicating with the Arduino interface.                                ");
 													printf("\n%s                                                  ", writer.getLastError().c_str()); break;
+	default: 										printf("\rAn unknown error occured.                                                      "); break;
 	}
 }
 
 // Run the diagnostics module
-void runDiagnostics(int comPort) {
-	printf("\rRunning diagnostics on COM port: %i\n",comPort);
+void runDiagnostics(const std::wstring& port) {
+	printf("\rRunning diagnostics on COM port: %ls\n",port.c_str());
 
-	writer.runDiagnostics(comPort, [](bool isError, const std::string message)->void {
+	writer.runDiagnostics(port, [](bool isError, const std::string message)->void {
 		if (isError)
 			printf("DIAGNOSTICS FAILED: %s\n",message.c_str());
 		else 
@@ -114,8 +225,11 @@ void runDiagnostics(int comPort) {
 
 		char c;
 		do {
-			c = _getch();
-			c=toupper(c);
+#ifdef _WIN32
+			c = toupper(_getch());
+#else
+			c = toupper(_getChar());
+#endif	
 		} while ((c != 'Y') && (c != 'N') && (c != '\n') && (c != '\r') && (c != '\x1B'));
 		printf("%c\n", c);
 
@@ -125,9 +239,13 @@ void runDiagnostics(int comPort) {
 	writer.closeDevice();
 }
 
+#ifdef _WIN32
 int wmain(int argc, wchar_t* argv[], wchar_t *envp[])
+#else
+int main(int argc, char* argv[], char *envp[])
+#endif
 {
-	printf("Arduino Amiga ADF Floppy disk Reader/Writer, Copyright (C) 2017-2020 Robert Smith\r\n");
+	printf("Arduino Amiga ADF & SCP Floppy Disk Reader/Writer V2.5, Copyright (C) 2017-2021 Robert Smith\r\n");
 	printf("Full sourcecode and documentation at https://amiga.robsmithdev.co.uk\r\n");
 	printf("This is free software licenced under the GNU General Public Licence V3\r\n\r\n");
 
@@ -135,42 +253,52 @@ int wmain(int argc, wchar_t* argv[], wchar_t *envp[])
 		printf("Usage:\r\n\n");
 		printf("To read a disk to an ADF file:\r\n");
 		printf("ArduinoFloppyReader <COMPORT> OutputFilename.ADF [READ]\r\n\r\n");
+		printf("To read a disk to an SCP file:\r\n");
+		printf("ArduinoFloppyReader <COMPORT> OutputFilename.SCP [READ]\r\n\r\n");
 		printf("To write an ADF file to disk:\r\n");
 		printf("ArduinoFloppyReader <COMPORT> InputFilename.ADF WRITE [VERIFY]\r\n\r\n");
 		printf("To start interface diagnostics:\r\n");
-		printf("ArduinoFloppyReader DIAGNOSTIC <COMPORT>\r\n\r\n");
+		printf("ArduinoFloppyReader <COMPORT> DIAGNOSTIC\r\n\r\n");
+		printf("Detected Serial Devices:\r\n");
+
+		std::vector<std::wstring> portList;
+		ArduinoFloppyReader::ArduinoInterface::enumeratePorts(portList);
+		for (const std::wstring& port : portList)
+			printf("    %ls\n", port.c_str());
+		printf("\r\n");
+
 		return 0;
 	}
-
-	bool writeMode = false;
-	bool verify = false;
-	if (argc > 3) {
-		_wcsupr(argv[3]);
-		writeMode = wcscmp(argv[3], L"WRITE") == 0;
-	}
-	if (argc > 4) {
-		_wcsupr(argv[4]);
-		verify = wcscmp(argv[4], L"VERIFY") == 0;
-	}
-
-	_wcsupr(argv[1]);
-	if (wcscmp(argv[1], L"DIAGNOSTIC") == 0) {
-		runDiagnostics(_wtoi(argv[2]));
-	}
-	else {
-
-		if (!writer.openDevice(_wtoi(argv[1]))) {
+	
+#ifdef _WIN32	
+	bool writeMode = (argc > 3) && (iequals(argv[3], L"WRITE"));
+	bool verify = (argc > 4) && (iequals(argv[4], L"VERIFY"));
+	if (argc >= 2) {
+		std::wstring port = argv[1];
+		std::wstring filename = argv[2];
+		int i = _wtoi(argv[1]);
+		if (i) port = L"COM" + std::to_wstring(i); else port = argv[1];
+#else
+	bool writeMode = (argc > 3) && (iequals(argv[3], "WRITE"));
+	bool verify = (argc > 4) && (iequals(argv[4], "VERIFY"));
+	if (argc >= 2) {
+		std::wstring port = atw(argv[1]);
+		std::wstring filename = atw(argv[2]);
+#endif
+		if (iequals(filename, L"DIAGNOSTIC")) {
+			runDiagnostics(port);
+		} else
+		if (!writer.openDevice(port)) {
 			printf("\rError opening COM port: %s  ", writer.getLastError().c_str());
 		}
 		else {
-
-			if (writeMode) adf2Disk(argv, verify); else disk2ADF(argv);
-
+			if (writeMode) adf2Disk(filename.c_str(), verify); else disk2ADF(filename.c_str());
 			writer.closeDevice();
 		}
 	}
 	
-	getchar();
+	printf("\r\n\r\n");
+	
     return 0;
 }
 
