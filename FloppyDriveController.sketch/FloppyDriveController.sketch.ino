@@ -42,7 +42,7 @@
 
 // ** Hardware Modification Changes to get the best support for disk change notifications **
 //    Pin 34 on the floppy drive connector (Disk Ready/Change) must be connected to Pin 10 on the Arduino
-//    Pin 12 on the floppy drive connector (Select Disk B) must be *disconnected* from pin 16 on the Arduino and connected to Pin 12.  Note you *must* leave the connection between Arduino Pin 5 and Floppy Connector 16 in place
+//    Pin 12 on the floppy drive connector (Select Disk B) must be *disconnected* from pin 5 on the Arduino and connected to Pin 11 on the Arduino.  Note you *must* leave the connection between Arduino Pin 5 and Floppy Connector 16 in place
 //    On the Arduino, connect Pin 12 to GND (0v) - this enables this advanced mode automatically.
 //    If you can't connect pin12 to GND because you want to use the ISP headers, then see https://amiga.robsmithdev.co.uk/isp
 
@@ -615,7 +615,7 @@ void checkWriteProtectStatus() {
                             serialBytesInUse++;                         \
                           }   
 
-// 12 is the minimum number here.  Any less than this and the CHECKSERIAL_ONLY() code will impact the output.  The pulse width doesn't matter as long as its at least 0.125uSec (its the falling edge that triggers a bit write)   
+// 14 is the minimum number here.  Any less than this and the CHECKSERIAL_ONLY() code will impact the output.  The pulse width doesn't matter as long as its at least 0.125uSec (its the falling edge that triggers a bit write)   
 // Because only the falling edge is important we achieve precomp by shifting the pulse starting position back or forward two clock ticks      
 // Because it may go back 2 ticks, we increase this number here by 2.  12 ticks is 750 ns, 14 ticks is 875 ns and 16 is 1000ns (1us) 
 // By doing this, the bit cell timing remains constant, but the actual write position is shifted +/- 125ns as required
@@ -651,10 +651,6 @@ void writePrecompTrack() {
     
     PIN_CTS_PORT|=PIN_CTS_MASK;                // stop any more data coming in!
  
-    // While the INDEX pin is high wait.  Might as well write from the start of the track
-    if (waitForIndex) 
-        while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
-
     // Signal we're ready for data
     PIN_CTS_PORT &= (~PIN_CTS_MASK);   
 
@@ -675,6 +671,10 @@ void writePrecompTrack() {
     // Reset the counter, ready for writing - abuse the Fast PWM to produce the wayforms we need
     TCCR2A = bit(COM2B1) | bit(WGM20) | bit(WGM21)| bit(WGM22);  // (COM2B0|COM2B1) Clear OC2B. on compare match, set OC2B at BOTTOM.  WGM20|WGM21|WGM22 is Fast PWM. 
     TCCR2B = bit(WGM22)| bit(CS20);         // WGM22 enables waveform generation.  CS20 starts the counter runing at maximum speed
+
+    // While the INDEX pin is high wait.  Might as well write from the start of the track
+    if (waitForIndex) 
+        while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
 
     // Get it ready    
     OCR2A = 0;                         // Because we're using the PWM limits backwards this causes it to get stuck when it reaches 0
