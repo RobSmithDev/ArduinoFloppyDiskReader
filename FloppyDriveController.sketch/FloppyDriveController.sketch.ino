@@ -28,6 +28,7 @@
                    Added some new functions which allow for more direct control of the drive
                    Remove the Erase function as discovered you just need to write a longer track to ensure you clear the gap.  Workbench writes 13630 bytes per track. The first part is filler at 0xAA
                    Added support for disk change notifications support (requires small hardware modification below)
+    Firmware V1.8a: Added 'no-click' support
 */    
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -402,6 +403,35 @@ bool goToTrack0() {
     currentTrack = 0;    // Reset the track number
     return true;
 }
+
+// Handle a no-click seeking operation
+void handleNoClickSeek() {
+  if (currentTrack != 0) {
+     // Not allowed.
+     writeByteToUART('0');
+     return;
+  }
+
+  startDriveForOperation();
+
+  digitalWrite(PIN_MOTOR_DIR,MOTOR_TRACK_DECREASE);   // Move OUT
+  stepDirectionHead();
+  smalldelay(1);
+
+  writeByteToUART('1');
+
+   // Now see if there is a disk in the drive.  Returning '#' means no disk in drive
+   if (advancedControllerMode) {     
+       if (digitalRead(PIN_DISK_CHANGE) == HIGH) writeByteToUART('1'); else writeByteToUART('#');  
+   } else {
+       // Don't detect disk
+       writeByteToUART('x');      
+   }
+   if (digitalRead(PIN_WRITE_PROTECTED) == LOW) writeByteToUART('1'); else writeByteToUART('#');  
+
+   stopDriveForOperation();
+}
+        
 
 // Goto to a specific track.  During testing it was easier for the track number to be supplied as two ASCII characters, so I left it like this
 bool gotoTrackX(bool reportDiskChange) {
@@ -1481,7 +1511,10 @@ void loop() {
         // Command "=" means goto track.  Should be formatted as =00 or =32 etc.  This also reports disk change and write protect status
         case '=': if (gotoTrackX(true)) {                      
                   } else writeByteToUART('0'); 
-                  break;                  
+                  break;  
+
+        case 'O': handleNoClickSeek();
+                  break;
   
         // Command "[" select LOWER disk side
         case '[': digitalWrite(PIN_HEAD_SELECT,LOW);
