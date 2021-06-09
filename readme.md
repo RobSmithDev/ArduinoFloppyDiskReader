@@ -66,6 +66,7 @@ For further details including how to wire this up please visit
 [https://amiga.robsmithdev.co.uk]
 
 # Whats changed?
+* v2.5 (firmware 1.8a) - Add support for 'noclick'
 * v2.5  A whole load of changes including:
         Fixed an encoding issue which prevented disks being read under Kickstart 1.3 or lower.
 		Added support for read "streaming" with index sync support        
