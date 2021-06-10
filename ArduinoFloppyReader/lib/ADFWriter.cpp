@@ -607,6 +607,7 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 	// Ask the user for verification of the result
 	if (!askQuestion(true,"Did the floppy disk start spinning, and did the drive LED switch on?")) {
 		messageOutput(true, "Please check the drive has power and the following PINS on the Arduino: 5 and 11");
+		messageOutput(true, "It's possible you may also need need to provide a seperate 5V power supply for this drive.");
 		return false;
 	}
 
@@ -620,6 +621,7 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 		}
 		else {
 			messageOutput(true, "Please check the following PINS on the Arduino: 7");
+			messageOutput(true, "It's possible you may also need need to provide a seperate 5V power supply for this drive.");
 		}
 		return false;
 	}
@@ -634,11 +636,13 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 	r = m_device.selectTrack(70);
 	if (r != DiagnosticResponse::drOK) {
 		messageOutput(true, m_device.getLastErrorStr());
+		messageOutput(true, "There is also a strong possability that you may also need need to provide a seperate 5V power supply for this drive.");
 		return false;
 	}
 
 	if (!askQuestion(true,"Could you hear the head moving quite a distance?")) {
         messageOutput(true, "As we successfully found track 0, please check the following PINS on the Arduino: 6, 7");
+		messageOutput(true, "It's possible you may also need need to provide a seperate 5V power supply for this drive.");
 		return false;
 	}
 

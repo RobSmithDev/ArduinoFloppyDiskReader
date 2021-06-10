@@ -942,6 +942,8 @@ DiagnosticResponse ArduinoInterface::readRotation(RotationExtractor& extractor, 
 					unsigned int bits = 0;
 					// Go!
 					if (extractor.extractRotation(firstOutputBuffer, bits, maxOutputSize)) {
+						m_diskInDrive = true;
+
 						if (!onRotation(&firstOutputBuffer, bits)) {
 							// And if the callback says so we stop.
 							abortReadStreaming();
@@ -955,6 +957,7 @@ DiagnosticResponse ArduinoInterface::readRotation(RotationExtractor& extractor, 
 						abortReadStreaming();
 						noDataCounter = 0;
 						timeout = true;
+						m_diskInDrive = false; // probably no disk
 					}
 			}
 		}

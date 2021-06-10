@@ -295,6 +295,7 @@ BEGIN_MESSAGE_MAP(CArduinoFloppyReaderWinDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_STARTSTOP2, &CArduinoFloppyReaderWinDlg::OnBnClickedStartstop2)
 	ON_BN_CLICKED(IDC_STARTSTOP3, &CArduinoFloppyReaderWinDlg::OnBnClickedStartstop3)
 	ON_MESSAGE(WM_DEVICECHANGE, &CArduinoFloppyReaderWinDlg::OnDevicechange)
+	ON_CBN_SELCHANGE(IDC_DISKFORMAT, &CArduinoFloppyReaderWinDlg::OnCbnSelchangeDiskformat)
 END_MESSAGE_MAP()
 
 
@@ -826,4 +827,24 @@ afx_msg LRESULT CArduinoFloppyReaderWinDlg::OnDevicechange(WPARAM wParam, LPARAM
 	enumComPorts();
 	setComPort(port);
 	return 0;
+}
+
+
+void CArduinoFloppyReaderWinDlg::OnCbnSelchangeDiskformat()
+{
+	// Correct the file extension
+	bool isSCP = m_fileFormat.GetCurSel() == 1;
+	CString filename;
+
+	m_outputADF.GetWindowText(filename);
+
+	int pos = filename.ReverseFind(_T('.'));
+	if (pos > 0) {
+		filename = filename.Left(pos);
+
+		if (isSCP) filename += _T(".scp"); else filename += _T(".adf");
+
+		m_outputADF.SetWindowText(filename);
+
+	}
 }
