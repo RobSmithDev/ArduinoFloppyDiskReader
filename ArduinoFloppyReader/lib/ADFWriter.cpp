@@ -514,7 +514,7 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 	if (!messageOutput) return false;
 	if (!askQuestion) return false;
 
-	if (!askQuestion(false, "Please insert a disk in the drive.\r\nUse a disk that you don't mind being erased.\nThis disk must contain data/formatted as an AmigaDOS disk")) {
+	if (!askQuestion(false, "Please insert a *write protected* disk in the drive.\r\nUse a disk that you don't mind being erased.\nThis disk must contain data/formatted as an AmigaDOS disk")) {
 		messageOutput(true, "Diagnostics aborted");
 		return false;
 	}
@@ -594,6 +594,20 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 			return false;
 		}
 		messageOutput(false, "Read speed test passed.  USB to serial converter is functioning correctly!");
+	}
+
+
+	if ((version.major > 1) || ((version.major == 1) && (version.minor >= 8))) {
+		messageOutput(false, "Testing write-protect signal");
+		for (;;) {
+		
+			if (m_device.checkIfDiskIsWriteProtected(true) == DiagnosticResponse::drWriteProtected) break;
+
+			if (!askQuestion(false, "Inserted disk is not write protected. If it is, then check Arduino Pin A0. Please insert a write protected AmigaDOS disk in the drive")) {
+				messageOutput(true, "Diagnostics aborted");
+				return false;
+			}
+		}
 	}
 
 	// Functions to test
@@ -691,21 +705,7 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 	if (r != DiagnosticResponse::drOK) {
 		messageOutput(true, m_device.getLastErrorStr());
 		return false;
-	}
-
-	for (;;) {
-		if (!askQuestion(false, "Please insert a write protected AmigaDOS disk in the drive")) {
-			messageOutput(true, "Diagnostics aborted");
-			return false;
-		}
-
-		if ((version.major > 1) || ((version.major == 1) && (version.minor >= 8))) {
-			if (m_device.checkIfDiskIsWriteProtected(true) == DiagnosticResponse::drWriteProtected) break;
-			messageOutput(true, "Disk is not write protected.");
-			messageOutput(true, "If it is, then check Arduin Pin A0");
-			return false;
-		}
-	}
+	}	
 
 	messageOutput(false, "Starting drive, and seeking to track 40.");
 	// Re-open the drive
@@ -838,7 +838,7 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 	}
 
 	// Now ask.
-	if (!askQuestion(true,"Would you like to test writing to a disk?  (please ensure the disk inserted is not important as data will be erased)")) {
+	if (!askQuestion(true,"Would you like to test writing to a disk?  Please insert a WRITE ENABLED disk that you *do not mind* being overwritten")) {
 		messageOutput(true, "Diagnostic aborted.");
 		return false;
 	}
@@ -860,6 +860,19 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 
 	} while (r == DiagnosticResponse::drWriteProtected);
 	// Writing is enabled.
+
+	if ((version.major > 1) || ((version.major == 1) && (version.minor >= 8))) {
+		for (;;) {
+
+			if (m_device.checkIfDiskIsWriteProtected(true) == DiagnosticResponse::drOK) break;
+
+			if (!askQuestion(false, "Inserted disk is write protected. If it isn't, then check Arduino Pin A0. Please insert a write *enabled* disk in the drive")) {
+				messageOutput(true, "Diagnostics aborted");
+				return false;
+			}
+		}
+	}
+
 	
 	// Goto 41, we'll write some stuff
 	r = m_device.selectTrack(41);
@@ -895,19 +908,28 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 		encodeSector(41, ArduinoFloppyReader::DiskSurface::dsUpper, sector, track[sector], disktrack.sectors[sector], lastByte);
 	}
 
-	// Attempt to write 10 times, with verify
+	// Attempt to write, with verify
 	messageOutput(false, "Writing and Verifying Track 41 (Upper Side).");
 	bool writtenOK = false;
 	for (int a = 1; a <= 10; a++) {
 		
+		r = m_device.eraseCurrentTrack();
+		if (r != DiagnosticResponse::drOK) {
+			messageOutput(true, m_device.getLastErrorStr());
+			messageOutput(true, "This can also be caused by insufficient power to the drive");
+			return false;
+		}
+
 		r = m_device.writeCurrentTrack((const unsigned char*)(&disktrack), sizeof(disktrack), false);
 		if (r != DiagnosticResponse::drOK) {
 			messageOutput(true, m_device.getLastErrorStr());
+			messageOutput(true, "This can also be caused by insufficient power to the drive");
 			return false;
 		}
 		r = m_device.readCurrentTrack(data, false);
 		if (r != DiagnosticResponse::drOK) {
 			messageOutput(true, m_device.getLastErrorStr());
+			messageOutput(true, "This can also be caused by insufficient power to the drive");
 			return false;
 		}
 
@@ -944,29 +966,106 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 				}
 				if (writtenOK) break;
 			}
+			if (writtenOK) break;
 		}
+		if (writtenOK) break;
 	}
 
 	// Final results
 	if (!writtenOK) {
 		messageOutput(true, "Unable to detect written track.  This could be for one of the following reasons:");
 		messageOutput(true, "1.  Please check the following PINS on the Arduino: 3, A0, A1");
-		messageOutput(true, "2.  Please check the Ardiono IDE config has not been modified from stock.  This was tested using 1.8.4, compiler settings may affect performance");
+		messageOutput(true, "2.  Please check the Arduino IDE config has not been modified from stock.  This was tested using 1.8.4, compiler settings may affect performance");
 		messageOutput(true, "3.  Check for poor connections, typically on a breadboard they may be intermittent which may pass the above results but still not work.");
 		messageOutput(true, "4.  Check for an electrically noisy environment.  It is possible that electronic noise (eg: from a cell phone) may cause errors reading and writing to the disk");
 		messageOutput(true, "5.  Shorten the floppy disk cable to help reduce noise.");
-		messageOutput(true, "6.  Ensure your power supply is strong enough to power the floppy drive.  Don't rely on the USB port for the 5V for the floppy drive!");
+		messageOutput(true, "6.  Ensure your power supply is strong enough to power the floppy drive.  This drive may need too much power for the USB port");
 		messageOutput(true, "7.  You can contact me for help, but some basic electronics diagnostics will help, checkout YouTube for guides.");
 
 		m_device.enableWriting(false);
 		return false;
 	}
-	else {
-		messageOutput(false, "Hurray! Writing was successful.  Your Arduino is ready for use! - Send us a photo!");
-		m_device.enableWriting(false);
-		return true;
+
+	// Attempt to write, with verify
+	messageOutput(false, "Writing (Precomp) and Verifying Track 41 (Upper Side).");
+	writtenOK = false;
+	for (int a = 1; a <= 10; a++) {
+
+		r = m_device.eraseCurrentTrack();
+		if (r != DiagnosticResponse::drOK) {
+			messageOutput(true, m_device.getLastErrorStr());
+			return false;
+		}
+
+		r = m_device.writeCurrentTrackPrecomp((const unsigned char*)(&disktrack), sizeof(disktrack), false, true);
+		if (r != DiagnosticResponse::drOK) {
+			messageOutput(true, m_device.getLastErrorStr());
+			return false;
+		}
+		r = m_device.readCurrentTrack(data, false);
+		if (r != DiagnosticResponse::drOK) {
+			messageOutput(true, m_device.getLastErrorStr());
+			return false;
+		}
+
+		// Data read.  See if any tracks were detected
+		DecodedTrack trk;
+		findSectors(data, 41, ArduinoFloppyReader::DiskSurface::dsUpper, AMIGA_WORD_SYNC, trk, true);
+		// Have a look at any of the found sectors and see if any are valid and matched the phrase we wrote onto the disk
+		for (const DecodedSector& sec : trk.validSectors) {
+			// See if we can find the sequence in here somewhere 
+			std::string s;
+			s.resize(SECTOR_BYTES);
+			memcpy(&s[0], sec.data, SECTOR_BYTES);
+
+			if (s.find(TEST_BYTE_SEQUENCE) != std::string::npos) {
+				// Excellent
+				writtenOK = true;
+				break;
+			}
+		}
+		if (!writtenOK) {
+			// See if we can find the sequence in one of the partial sectors
+			for (int sector = 0; sector < NUM_SECTORS_PER_TRACK; sector++) {
+				for (const DecodedSector& sec : trk.invalidSectors[sector]) {
+					// See if we can find the sequence in here somewhere 
+					std::string s;
+					s.resize(SECTOR_BYTES);
+					memcpy(&s[0], sec.data, SECTOR_BYTES);
+
+					if (s.find(TEST_BYTE_SEQUENCE) != std::string::npos) {
+						// Excellent
+						writtenOK = true;
+						break;
+					}
+				}
+				if (writtenOK) break;
+			}
+			if (writtenOK) break;
+		}
+		if (writtenOK) break;
 	}
-	
+
+	// Final results
+	if (!writtenOK) {
+		messageOutput(true, "Unable to detect written track.  This could be for one of the following reasons:");
+		messageOutput(true, "1.  Please check the following PINS on the Arduino: 3, A0, A1");
+		messageOutput(true, "2.  Please check the Arduino IDE config has not been modified from stock.  This was tested using 1.8.4, compiler settings may affect performance");
+		messageOutput(true, "3.  Check for poor connections, typically on a breadboard they may be intermittent which may pass the above results but still not work.");
+		messageOutput(true, "4.  Check for an electrically noisy environment.  It is possible that electronic noise (eg: from a cell phone) may cause errors reading and writing to the disk");
+		messageOutput(true, "5.  Shorten the floppy disk cable to help reduce electrical noise.");
+		messageOutput(true, "6.  Ensure your power supply is strong enough to power the floppy drive.  This drive may need too much power for the USB port");
+		messageOutput(true, "7.  If you are using a USB hub, try connecting directly to the computer or a different USB port");
+		messageOutput(true, "8.  You can contact me for help, but some basic electronics diagnostics will help, checkout YouTube for guides.");
+
+		m_device.enableWriting(false);
+		return false;
+	}
+
+	messageOutput(false, "Hurray! Writing was successful.  Your Arduino is ready for use! - Send us a photo");
+	messageOutput(false, "or join my Discord server at https://discord.gg/HctVgSFEXu");
+	m_device.enableWriting(false);
+	return true;
 }
 
 // Get the current firmware version.  Only valid if openPort is successful

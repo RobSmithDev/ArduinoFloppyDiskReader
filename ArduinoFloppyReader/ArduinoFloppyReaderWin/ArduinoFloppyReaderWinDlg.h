@@ -25,6 +25,7 @@
 #include "afxwin.h"
 #include "afxcmn.h"
 #include <thread>
+#include <string>
 
 
 // CArduinoFloppyReaderWinDlg dialog
