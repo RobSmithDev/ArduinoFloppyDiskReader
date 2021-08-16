@@ -29,6 +29,23 @@ formatted DD floppy disks.
 Using the supplied makefile you should be able to **compile this on Linux**.  It has
 been tested with Raspberry Pi OS (Raspbian - Debian-based)
 
+# Compiling on Linux x64
+
+Makefile contains directives to produce 32bit executable. To make it usable, install these
+two libraries (in the example, using **apt** for Debian-based distros):
+
+* **sudo apt install gcc-multilib**
+* **sudo apt install g++-multilib**
+
+Then execute build command:
+
+* **cd ArduinoFloppyReader**
+* **cd ArduinoFloppyReader**
+* **make clean**
+* **make**
+
+It will produce **ArduinoReaderWriter** executable file.
+
 # Scripts for linux
 The above application apparently works under WINE, however,
 Github user "kollokollo" made some scripts for reading other formats on Linux 
