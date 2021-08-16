@@ -9,7 +9,7 @@
 CC = g++
 
 # define any compile-time flags
-CFLAGS = -Wall -std=c++14 -Wno-psabi -O3
+CFLAGS = -Wall -std=c++14 -Wno-psabi -O3 -m32
 
 # define any directories containing header files other than /usr/include
 #
