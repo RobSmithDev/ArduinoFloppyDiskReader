@@ -265,7 +265,7 @@ DiagnosticResponse ArduinoInterface::testTransferSpeed() {
 
 	unsigned char buffer[256];
 	for (int a = 0; a <= 10; a++) {
-		unsigned long read;
+		uint32_t read;
 
 		read = m_comPort.read(buffer, sizeof(buffer));
 
@@ -340,7 +340,7 @@ DiagnosticResponse ArduinoInterface::attemptToSync(std::string& versionString, S
 	buffer[0] = SPECIAL_ABORT_CHAR;
 	buffer[1] = COMMAND_VERSION;
 
-	unsigned long size = port.write(&buffer[0], 2);
+	uint32_t size = port.write(&buffer[0], 2);
 	if (size != 2) {
 		// Couldn't write to device
 		port.closePort();
@@ -462,7 +462,7 @@ DiagnosticResponse ArduinoInterface::openPort(const std::wstring& portName, bool
 	char buffer[2];
 	int counter = 0;
 	for (;;) {
-		unsigned long size = m_comPort.read(buffer, 1);
+		uint32_t size = m_comPort.read(buffer, 1);
 		if (size < 1)
 			if (counter++>=10) break;
 	}
@@ -931,10 +931,10 @@ DiagnosticResponse ArduinoInterface::readRotation(RotationExtractor& extractor, 
 	for (;;) {
 
 		// More efficient to read several bytes in one go		
-		unsigned long bytesAvailable = m_comPort.getBytesWaiting();
+		uint32_t bytesAvailable = m_comPort.getBytesWaiting();
 		if (bytesAvailable < 1) bytesAvailable = 1;
 		if (bytesAvailable > sizeof(tempReadBuffer)) bytesAvailable = sizeof(tempReadBuffer);
-		unsigned long bytesRead = m_comPort.read(tempReadBuffer, m_abortSignalled ? 1 : bytesAvailable);
+		uint32_t bytesRead = m_comPort.read(tempReadBuffer, m_abortSignalled ? 1 : bytesAvailable);
 
 
 		for (size_t a = 0; a < bytesRead; a++) {
@@ -1327,7 +1327,7 @@ DiagnosticResponse ArduinoInterface::runCommand(const char command, const char p
 bool ArduinoInterface::deviceRead(void* target, const unsigned int numBytes, const bool failIfNotAllRead) {
 	if (!m_comPort.isPortOpen()) return false;
 
-	unsigned long read = m_comPort.read(target, numBytes);
+	uint32_t read = m_comPort.read(target, numBytes);
 
 	if (read < numBytes) {
 		if (failIfNotAllRead) return false;
