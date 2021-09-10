@@ -9,7 +9,8 @@
 CC = g++
 
 # define any compile-time flags
-CFLAGS = -Wall -std=c++14 -Wno-psabi -O3
+CFLAGS = -Wall -std=c++14 -Wno-psabi -O0
+GCFLAGS = ${CFLAGS} $(shell pkg-config --cflags gtkmm-3.0)
 
 # define any directories containing header files other than /usr/include
 #
@@ -19,15 +20,17 @@ INCLUDES = -I../lib
 #   if I wanted to include libraries not in /usr/lib I'd specify
 #   their path using -Lpath, something like:
 LFLAGS = -L../lib
+GLFLAGS = ${LFLAGS} $(shell pkg-config --libs gtkmm-3.0)
 
 # define any libraries to link into executable:
 #   if I want to link in libraries (libx.so or libx.a) I use the -llibname 
 #   option, something like (this will link in libmylib.so and libm.so:
 LIBS = 
 
-# define the C source files
-SRCS = Main.cpp ../lib/SerialIO.cpp ../lib/RotationExtractor.cpp ../lib/ArduinoInterface.cpp ../lib/ADFWriter.cpp 
-
+# define the C surce files
+COMMON_SRC = ../lib/SerialIO.cpp ../lib/RotationExtractor.cpp ../lib/ArduinoInterface.cpp ../lib/ADFWriter.cpp
+SRCS = Main.cpp ${COMMON_SRC}
+GSRCS =  GarduinoReaderWriter.cpp ${COMMON_SRC}
 # define the C object files 
 #
 # This uses Suffix Replacement within a macro:
@@ -37,9 +40,13 @@ SRCS = Main.cpp ../lib/SerialIO.cpp ../lib/RotationExtractor.cpp ../lib/ArduinoI
 # with the .o suffix
 #
 OBJS = $(SRCS:.c=.o)
+GOBJS = $(GSRCS:.c=.o)
 
 # define the executable file 
 MAIN = ArduinoReaderWriter
+
+#GUI
+GARDUINO = GarduinoReaderWriter
 
 #
 # The following part of the makefile is generic; it can be used to 
@@ -49,11 +56,14 @@ MAIN = ArduinoReaderWriter
 
 .PHONY: depend clean
 
-all:    $(MAIN)
+all:    $(MAIN) $(GARDUINO)
 		@echo  ArduinoReaderWriter ready
 
 $(MAIN): $(OBJS) 
 		$(CC) $(CFLAGS) $(INCLUDES) -o $(MAIN) $(OBJS) $(LFLAGS) $(LIBS)
+
+$(GARDUINO): $(GOBJS) makefile Garduino.glade
+		$(CC) $(GCFLAGS) $(INCLUDES) -o $(GARDUINO) $(GOBJS) $(GLFLAGS) $(LIBS)
 
 # this is a suffix replacement rule for building .o's from .c's
 # it uses automatic variables $<: the name of the prerequisite of
@@ -63,7 +73,7 @@ $(MAIN): $(OBJS)
 		$(CC) $(CFLAGS) $(INCLUDES) -c $<  -o $@
 
 clean:
-		$(RM) *.o *~ $(MAIN)
+		$(RM) *.o *~ $(MAIN) ${GARDUINO}
 
 depend: $(SRCS)
 		makedepend $(INCLUDES) $^
