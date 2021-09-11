@@ -4,6 +4,8 @@
 Created by Robert Smith @RobSmithDev
 https://amiga.robsmithdev.co.uk
 
+# This repo adds a GTK+ GUI for linux
+To compile: make all; ./GarduinoReaderWriter
 
 # What is it?
 This project uses an Arduino to interface with a floppy disk drive and 
