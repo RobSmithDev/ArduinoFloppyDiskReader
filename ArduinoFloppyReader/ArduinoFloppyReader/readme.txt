@@ -6,7 +6,7 @@ This is a console application
 It should build with Visual Studio 2019
 
 It will also compile on some distros of Linux. 
-To compile/run the GTK+ GUI:
+To compile/run the GTK+ GUI (requires gtkmm-3.x):
 make all; ./GarduinoReaderWriter
 
 
