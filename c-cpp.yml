@@ -1,0 +1,22 @@
+name: C/C++ CI
+
+on:
+  push:
+    branches: [ linux ]
+  pull_request:
+    branches: [ linux ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Install gtkmm
+      run: sudo apt-get install libgtkmm-3.0-dev
+    - name: make
+      run: |
+        cd ArduinoFloppyReader/ArduinoFloppyReader
+        make all
+
