@@ -7,31 +7,6 @@
 #include "../lib/ArduinoInterface.h"
 #include "../lib/ADFWriter.h"
 
-enum Tracks
-{
-    eighty = 80,
-    eightytwo = 82,
-};
-
-enum ReadType
-{
-    ADF = 1,
-    SCP = 2,
-};
-
-class WindowState
-{
-public:
-    Glib::ustring serialPort;
-    ReadType type;
-    Tracks tracks;
-    bool verify;
-    bool writeCompensation;
-    Glib::ustring readFileName;
-    Glib::ustring readFolder;
-    Glib::ustring writeFileName;
-};
-
 class MainWindow : public Gtk::ApplicationWindow
 {
 public:
