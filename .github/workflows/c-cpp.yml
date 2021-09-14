@@ -19,4 +19,9 @@ jobs:
       run: |
         cd ArduinoFloppyReader/ArduinoFloppyReader
         make all
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: WebApp1
+        path: /home/runner/work/ArduinoFloppyDiskReader/ArduinoFloppyReader/ArduinoFloppyReader/GarduinoReaderWriter
 
