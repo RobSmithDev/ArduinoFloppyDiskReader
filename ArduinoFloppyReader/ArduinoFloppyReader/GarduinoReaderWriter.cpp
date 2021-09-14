@@ -66,7 +66,6 @@ public:
                 case 3:
                     return ArduinoFloppyReader::WriteResponse::wrSkipBadChecksums;
                 }
-
             }
 
             // Just continue
@@ -107,7 +106,7 @@ public:
 
         writeFolderSelector->signal_file_set().connect([this]()
                                                        {
-                                                           std::cout<< "got filename" << writeFolderSelector->get_filename() << std::endl;
+                                                           std::cout << "got filename " << writeFolderSelector->get_filename() << std::endl;
                                                            if (this->writeFolderSelector->get_filename() != "" && diagnosticsButton->get_sensitive())
                                                            {
                                                                writeButton->set_sensitive(true);
@@ -322,6 +321,8 @@ private:
         std::cerr << strLine << std::endl;
         statusBar->pop();
         statusBar->push(strLine);
+        while (gtk_events_pending())
+            gtk_main_iteration();
     }
 
     void run_diagnostics(Glib::ustring serial)
