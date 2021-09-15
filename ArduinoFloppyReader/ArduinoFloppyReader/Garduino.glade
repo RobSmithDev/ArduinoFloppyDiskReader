@@ -3,8 +3,8 @@
 <interface>
   <requires lib="gtk+" version="3.24"/>
   <object class="GtkWindow" id="MainWindow">
-    <property name="width-request">500</property>
-    <property name="height-request">300</property>
+    <property name="width-request">700</property>
+    <property name="height-request">600</property>
     <property name="can-focus">False</property>
     <property name="title" translatable="yes">Arduino Amiga Floppy Disk Reader and Writer</property>
     <child>
@@ -14,73 +14,97 @@
         <property name="orientation">vertical</property>
         <property name="spacing">5</property>
         <child>
-          <object class="GtkFrame">
+          <object class="GtkBox">
             <property name="visible">True</property>
             <property name="can-focus">False</property>
-            <property name="label-xalign">0</property>
             <child>
-              <object class="GtkAlignment">
+              <object class="GtkFrame">
                 <property name="visible">True</property>
                 <property name="can-focus">False</property>
-                <property name="top-padding">1</property>
-                <property name="bottom-padding">1</property>
-                <property name="left-padding">12</property>
-                <property name="right-padding">12</property>
+                <property name="label-xalign">0</property>
                 <child>
-                  <object class="GtkBox">
+                  <object class="GtkAlignment">
                     <property name="visible">True</property>
                     <property name="can-focus">False</property>
-                    <property name="spacing">20</property>
-                    <property name="homogeneous">True</property>
+                    <property name="top-padding">1</property>
+                    <property name="bottom-padding">1</property>
+                    <property name="left-padding">12</property>
+                    <property name="right-padding">12</property>
                     <child>
-                      <object class="GtkLabel" id="serialPortLabel">
+                      <object class="GtkBox">
                         <property name="visible">True</property>
                         <property name="can-focus">False</property>
-                        <property name="label" translatable="yes">Arduino connected on:</property>
+                        <property name="valign">center</property>
+                        <property name="spacing">20</property>
+                        <property name="homogeneous">True</property>
+                        <child>
+                          <object class="GtkLabel" id="serialPortLabel">
+                            <property name="visible">True</property>
+                            <property name="can-focus">False</property>
+                            <property name="label" translatable="yes">Arduino connected on:</property>
+                          </object>
+                          <packing>
+                            <property name="expand">False</property>
+                            <property name="fill">True</property>
+                            <property name="position">0</property>
+                          </packing>
+                        </child>
+                        <child>
+                          <object class="GtkComboBoxText" id="serialPortsCombo">
+                            <property name="visible">True</property>
+                            <property name="can-focus">False</property>
+                          </object>
+                          <packing>
+                            <property name="expand">False</property>
+                            <property name="fill">True</property>
+                            <property name="position">1</property>
+                          </packing>
+                        </child>
+                        <child>
+                          <object class="GtkButton" id="diagnosticsButton">
+                            <property name="label" translatable="yes">Run Diagnostics</property>
+                            <property name="visible">True</property>
+                            <property name="sensitive">False</property>
+                            <property name="can-focus">True</property>
+                            <property name="receives-default">True</property>
+                          </object>
+                          <packing>
+                            <property name="expand">False</property>
+                            <property name="fill">True</property>
+                            <property name="position">2</property>
+                          </packing>
+                        </child>
                       </object>
-                      <packing>
-                        <property name="expand">False</property>
-                        <property name="fill">True</property>
-                        <property name="position">0</property>
-                      </packing>
-                    </child>
-                    <child>
-                      <object class="GtkComboBoxText" id="serialPortsCombo">
-                        <property name="visible">True</property>
-                        <property name="can-focus">False</property>
-                      </object>
-                      <packing>
-                        <property name="expand">False</property>
-                        <property name="fill">True</property>
-                        <property name="position">1</property>
-                      </packing>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="diagnosticsButton">
-                        <property name="label" translatable="yes">Run Diagnostics</property>
-                        <property name="visible">True</property>
-                        <property name="sensitive">False</property>
-                        <property name="can-focus">True</property>
-                        <property name="receives-default">True</property>
-                      </object>
-                      <packing>
-                        <property name="expand">False</property>
-                        <property name="fill">True</property>
-                        <property name="position">2</property>
-                      </packing>
                     </child>
                   </object>
                 </child>
+                <child type="label">
+                  <object class="GtkLabel">
+                    <property name="visible">True</property>
+                    <property name="can-focus">False</property>
+                    <property name="xpad">10</property>
+                    <property name="label" translatable="yes">Arduino Configuration
+</property>
+                  </object>
+                </child>
               </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">0</property>
+              </packing>
             </child>
-            <child type="label">
-              <object class="GtkLabel">
+            <child>
+              <object class="GtkImage" id="diskImage">
                 <property name="visible">True</property>
                 <property name="can-focus">False</property>
-                <property name="xpad">10</property>
-                <property name="label" translatable="yes">Arduino Configuration
-</property>
+                <property name="pixbuf">../ArduinoFloppyReaderWin/res/floppy.bmp</property>
               </object>
+              <packing>
+                <property name="expand">True</property>
+                <property name="fill">True</property>
+                <property name="position">1</property>
+              </packing>
             </child>
           </object>
           <packing>
@@ -257,12 +281,14 @@
                       <object class="GtkBox">
                         <property name="visible">True</property>
                         <property name="can-focus">False</property>
+                        <property name="halign">center</property>
                         <child>
                           <object class="GtkCheckButton" id="alwaysIgnore">
                             <property name="label" translatable="yes">Always Ignore Read Errors</property>
                             <property name="visible">True</property>
                             <property name="can-focus">True</property>
                             <property name="receives-default">False</property>
+                            <property name="halign">start</property>
                             <property name="active">True</property>
                             <property name="draw-indicator">True</property>
                           </object>
@@ -374,6 +400,7 @@
                             <property name="visible">True</property>
                             <property name="can-focus">True</property>
                             <property name="receives-default">False</property>
+                            <property name="halign">start</property>
                             <property name="draw-indicator">True</property>
                           </object>
                           <packing>
@@ -388,6 +415,7 @@
                             <property name="visible">True</property>
                             <property name="can-focus">True</property>
                             <property name="receives-default">False</property>
+                            <property name="halign">start</property>
                             <property name="draw-indicator">True</property>
                           </object>
                           <packing>
@@ -546,23 +574,32 @@
           </packing>
         </child>
         <child>
-          <object class="GtkStatusbar" id="statusBar">
-            <property name="name">statusBar</property>
+          <object class="GtkScrolledWindow">
             <property name="visible">True</property>
             <property name="can-focus">False</property>
-            <property name="margin-left">10</property>
-            <property name="margin-right">10</property>
-            <property name="margin-start">10</property>
-            <property name="margin-end">10</property>
-            <property name="margin-top">6</property>
-            <property name="margin-bottom">6</property>
-            <property name="orientation">vertical</property>
+            <property name="hscrollbar-policy">never</property>
+            <property name="shadow-type">in</property>
+            <property name="min-content-height">100</property>
+            <property name="kinetic-scrolling">False</property>
+            <property name="overlay-scrolling">False</property>
+            <property name="max-content-height">300</property>
+            <property name="propagate-natural-width">True</property>
+            <property name="propagate-natural-height">True</property>
+            <child>
+              <object class="GtkTextView" id="statusBar">
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="editable">False</property>
+                <property name="cursor-visible">False</property>
+                <property name="accepts-tab">False</property>
+                <property name="monospace">True</property>
+              </object>
+            </child>
           </object>
           <packing>
-            <property name="expand">False</property>
+            <property name="expand">True</property>
             <property name="fill">True</property>
-            <property name="pack-type">end</property>
-            <property name="position">4</property>
+            <property name="position">5</property>
           </packing>
         </child>
       </object>

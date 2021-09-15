@@ -666,7 +666,6 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 		m_device.selectTrack(3);
 
 		std::chrono::time_point<std::chrono::steady_clock> start = std::chrono::steady_clock::now();
-		messageOutput(false, "Testing Disk Change pin.");
 		messageOutput(false, "*** Please remove disk from drive *** (you have 30 seconds)");
 		while (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() < 30000) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(250));

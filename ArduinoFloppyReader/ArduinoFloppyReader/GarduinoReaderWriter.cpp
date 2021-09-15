@@ -29,8 +29,10 @@ public:
         }
         diagnosticsButton->signal_clicked().connect([this]()
                                                     {
+                                                        diagnosticsButton->set_sensitive(false);
                                                         Glib::ustring serial = portsCombo->get_active_text();
                                                         run_diagnostics(serial);
+                                                        diagnosticsButton->set_sensitive(true);
                                                     });
 
         auto readerCallback = [this](const int currentTrack, const ArduinoFloppyReader::DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound) -> ArduinoFloppyReader::WriteResponse
@@ -41,8 +43,6 @@ public:
             goodCount->set_text(Glib::ustring::sprintf("%i", sectorsFound));
             partialCount->set_text(Glib::ustring::sprintf("%i", badSectorsFound));
             sideLabel->set_text(side);
-            while (gtk_events_pending())
-                gtk_main_iteration();
 
             if (retryCounter > 20)
             {
@@ -178,7 +178,8 @@ private:
     Gtk::FileChooserButton *folderButton = nullptr;
     Gtk::ComboBoxText *typeSelector = nullptr;
     Gtk::RadioButton *trackButton = nullptr;
-    Gtk::Statusbar *statusBar = nullptr;
+    Gtk::TextView *statusBar = nullptr;
+    Gtk::Image *diskImage = nullptr;
 
     void get_widgets()
     {
@@ -308,6 +309,10 @@ private:
             std::cout << "Unexpected button clicked." << std::endl;
             break;
         }
+        while (Gtk::Main::events_pending())
+        {
+            Gtk::Main::iteration();
+        }
         return isYes;
     }
 
@@ -315,14 +320,22 @@ private:
     {
         std::string strLine;
 
+        while (Gtk::Main::events_pending())
+        {
+            Gtk::Main::iteration();
+        }
         if (isError)
             strLine = "DIAGNOSTICS FAILED: ";
-        strLine += status.c_str();
-        std::cerr << strLine << std::endl;
-        statusBar->pop();
-        statusBar->push(strLine);
-        while (gtk_events_pending())
-            gtk_main_iteration();
+        strLine += (status + "\n").c_str();
+        std::cerr << strLine;
+        auto buffer = statusBar->get_buffer();
+        buffer->insert(buffer->end(), strLine);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        statusBar->scroll_to(buffer->get_insert(), 0);
+        while (Gtk::Main::events_pending())
+        {
+            Gtk::Main::iteration();
+        }
     }
 
     void run_diagnostics(Glib::ustring serial)
@@ -330,17 +343,15 @@ private:
         ArduinoFloppyReader::ADFWriter writer;
         writer.runDiagnostics(
             std::wstring(serial.begin(), serial.end()), [this, serial](bool isError, const std::string message) -> void
-            {
-                while (gtk_events_pending())
-                    gtk_main_iteration();
-                this->showStatus(isError, message);
-            },
+            { this->showStatus(isError, message); },
             [this, serial](bool isQuestion, const std::string question) -> bool
             {
-                while (gtk_events_pending())
-                    gtk_main_iteration();
                 return this->showQuestion(isQuestion, question);
             });
+        while (Gtk::Main::events_pending())
+        {
+            Gtk::Main::iteration();
+        }
     }
 };
 
@@ -355,9 +366,5 @@ int main(int argc, char *argv[])
 
     builder->get_widget_derived("MainWindow", wnd);
 
-    auto r = app->run(*wnd);
-
-    delete wnd;
-
-    return r;
+    return app->run(*wnd);
 }
