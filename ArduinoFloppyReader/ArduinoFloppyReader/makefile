@@ -9,8 +9,9 @@
 CC = g++
 
 # define any compile-time flags
-CFLAGS = -Wall -std=c++14 -Wno-psabi -O0
+CFLAGS = -Wall -std=c++14 -Wno-psabi -O0 -g
 GCFLAGS = ${CFLAGS} $(shell pkg-config --cflags gtkmm-3.0)
+WCFLAGS = ${CFLAGS} $(shell wx-config --cflags)
 
 # define any directories containing header files other than /usr/include
 #
@@ -21,6 +22,7 @@ INCLUDES = -I../lib
 #   their path using -Lpath, something like:
 LFLAGS = -L../lib
 GLFLAGS = ${LFLAGS} $(shell pkg-config --libs gtkmm-3.0)
+WLFLAGS = ${LFLAGS} $(shell wx-config --libs)
 
 # define any libraries to link into executable:
 #   if I want to link in libraries (libx.so or libx.a) I use the -llibname 
@@ -31,6 +33,8 @@ LIBS =
 COMMON_SRC = ../lib/SerialIO.cpp ../lib/RotationExtractor.cpp ../lib/ArduinoInterface.cpp ../lib/ADFWriter.cpp
 SRCS = Main.cpp ${COMMON_SRC}
 GSRCS =  GarduinoReaderWriter.cpp ${COMMON_SRC}
+WSRCS =  WarduinoReaderWriter.cpp ${COMMON_SRC}
+
 # define the C object files 
 #
 # This uses Suffix Replacement within a macro:
@@ -41,12 +45,14 @@ GSRCS =  GarduinoReaderWriter.cpp ${COMMON_SRC}
 #
 OBJS = $(SRCS:.c=.o)
 GOBJS = $(GSRCS:.c=.o)
+WOBJS = $(WSRCS:.c=.o)
 
 # define the executable file 
 MAIN = ArduinoReaderWriter
 
 #GUI
 GARDUINO = GarduinoReaderWriter
+WARDUINO = WarduinoReaderWriter
 
 #
 # The following part of the makefile is generic; it can be used to 
@@ -56,7 +62,7 @@ GARDUINO = GarduinoReaderWriter
 
 .PHONY: depend clean
 
-all:    $(MAIN) $(GARDUINO)
+all:    $(MAIN) $(GARDUINO) $(WARDUINO)
 		@echo  ArduinoReaderWriter ready
 
 $(MAIN): $(OBJS) 
@@ -64,6 +70,9 @@ $(MAIN): $(OBJS)
 
 $(GARDUINO): $(GOBJS) makefile Garduino.glade
 		$(CC) $(GCFLAGS) $(INCLUDES) -o $(GARDUINO) $(GOBJS) $(GLFLAGS) $(LIBS)
+
+$(WARDUINO): $(WOBJS) makefile
+		$(CC) $(WCFLAGS) $(INCLUDES) -o $(WARDUINO) $(WOBJS) $(WLFLAGS) $(LIBS)
 
 # this is a suffix replacement rule for building .o's from .c's
 # it uses automatic variables $<: the name of the prerequisite of
