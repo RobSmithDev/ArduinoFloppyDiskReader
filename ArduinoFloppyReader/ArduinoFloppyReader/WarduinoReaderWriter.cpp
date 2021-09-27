@@ -21,6 +21,8 @@ private:
     // wxTextCtrl *textctrl;
     wxComboBox *portCombo;
     wxButton *diagnosticsButton;
+    wxButton *readButton;
+    wxButton *writeButton;
     void OnDiagnostics(wxCommandEvent &WXUNUSED(event));
     void run_diagnostics(std::string serial);
     void showStatus(bool isError, std::string status);
@@ -40,12 +42,35 @@ bool WarduinoApp::OnInit()
     return true;
 }
 MyFrame::MyFrame()
-    : wxFrame(NULL, wxID_ANY, "Arduino Amiga Floppy Disk Reader and Writer")
+    : wxFrame(NULL, wxID_ANY, "Arduino Amiga Floppy Disk Reader and Writer", wxDefaultPosition, wxSize(600, 650))
 {
     CreateStatusBar();
     SetStatusText("Welcome to wxWidgets!");
 
+    wxBoxSizer *vbox = new wxBoxSizer(wxVERTICAL);
+    wxBoxSizer *hbox1 = new wxBoxSizer(wxHORIZONTAL);
+    wxBoxSizer *hbox2 = new wxBoxSizer(wxHORIZONTAL);
+    wxBoxSizer *hbox3 = new wxBoxSizer(wxHORIZONTAL);
+    wxStaticBox *frameDiag = new wxStaticBox(this, wxID_ANY, "Arduino Configuration", wxDefaultPosition, wxSize(600, 200));
+    wxStaticBox *frameCopy = new wxStaticBox(this, wxID_ANY, "Copy Disk to ADF or SCP File (read)", wxDefaultPosition, wxSize(600, 200));
+    wxStaticBox *frameWrite = new wxStaticBox(this, wxID_ANY, "Write ADF File to Disk (write)", wxDefaultPosition, wxSize(600, 200));
+
+    auto arduinoLabel = new wxStaticText(this, -1, "Arduino connected on");
+    frameDiag->SetSizer(hbox1);
+    frameCopy->SetSizer(hbox2);
+    frameWrite->SetSizer(hbox3);
+    hbox1->Add(arduinoLabel);
+    vbox->Add(frameDiag, 1);
+    vbox->Add(frameCopy, 1);
+    vbox->Add(frameWrite, 1);
+    auto saveLabel = new wxStaticText(this, -1, "Save to");
+    hbox2->Add(saveLabel);
+    auto writeLabel = new wxStaticText(this, -1, "ADF File");
+    hbox3->Add(writeLabel);
+    this->SetSizer(vbox);
+
     portCombo = new wxComboBox(this, COMBO_Ports);
+    hbox1->Add(portCombo);
     std::vector<std::wstring> portList;
     ArduinoFloppyReader::ArduinoInterface::enumeratePorts(portList);
     for (std::wstring port : portList)
@@ -56,21 +81,9 @@ MyFrame::MyFrame()
     if (portList.size() > 0) {
         portCombo->SetSelection(0);
     }
-    diagnosticsButton = new wxButton(this, BUTTON_Diagnostics, "Run Diagnostics");
+    diagnosticsButton = new wxButton(frameDiag, BUTTON_Diagnostics, "Run Diagnostics");
     Connect(BUTTON_Diagnostics, wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(MyFrame::OnDiagnostics));
-    wxBoxSizer *vbox = new wxBoxSizer(wxVERTICAL);
-    wxBoxSizer *hbox1 = new wxBoxSizer(wxHORIZONTAL);
-    wxBoxSizer *hbox2 = new wxBoxSizer(wxHORIZONTAL);
-
-    hbox1->Add(new wxStaticText(this, -1, "Arduino connected on"));
-    hbox1->Add(portCombo);
     hbox1->Add(diagnosticsButton);
-    vbox->Add(hbox1, 1, wxEXPAND);
-
-
-    vbox->Add(hbox2, 0, wxALIGN_CENTER, 10);
-    this->SetSizer(vbox);
-
     Centre();
     Show(true);
 }
