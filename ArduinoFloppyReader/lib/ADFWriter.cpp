@@ -89,13 +89,13 @@ typedef struct alignas(8)  {
 	unsigned char sectorNumber;       // The sector we just read (0 to 11)
 	unsigned char sectorsRemaining;   // How many more sectors remain until the gap (0 to 10)
 
-	unsigned long sectorLabel[4];     // OS Recovery Data, we ignore this
+	uint32_t sectorLabel[4];     // OS Recovery Data, we ignore this
 
-	unsigned long headerChecksum;	  // Read from the header, header checksum
-	unsigned long dataChecksum;		  // Read from the header, data checksum
+	uint32_t headerChecksum;	  // Read from the header, header checksum
+	uint32_t dataChecksum;		  // Read from the header, data checksum
 
-	unsigned long headerChecksumCalculated;   // The header checksum we calculate
-	unsigned long dataChecksumCalculated;     // The data checksum we calculate
+	uint32_t headerChecksumCalculated;   // The header checksum we calculate
+	uint32_t dataChecksumCalculated;     // The data checksum we calculate
 
 	RawDecodedSector data;          // decoded sector data
 
@@ -116,15 +116,15 @@ struct DecodedTrack {
 // *input;	MFM coded data buffer (size == 2*data_size) 
 // *output;	decoded data buffer (size == data_size) 
 // Returns the checksum calculated over the data
-unsigned long decodeMFMdata(const unsigned long* input, unsigned long* output, const unsigned int data_size) {
-	unsigned long odd_bits, even_bits;
-	unsigned long chksum = 0L;
+uint32_t decodeMFMdata(const uint32_t* input, uint32_t* output, const unsigned int data_size) {
+	uint32_t odd_bits, even_bits;
+	uint32_t chksum = 0L;
 	unsigned int count;
 
 	// the decoding is made here long by long : with data_size/4 iterations 
 	for (count = 0; count < data_size / 4; count++) {
 		odd_bits = *input;					// longs with odd bits 
-		even_bits = *(unsigned long*)(((unsigned char*)input) + data_size);   // longs with even bits - located 'data_size' bytes after the odd bits
+		even_bits = *(uint32_t*)(((unsigned char*)input) + data_size);   // longs with even bits - located 'data_size' bytes after the odd bits
 
 		chksum ^= odd_bits;              // XOR Checksum
 		chksum ^= even_bits;
@@ -140,12 +140,12 @@ unsigned long decodeMFMdata(const unsigned long* input, unsigned long* output, c
 // *input;	RAW data buffer (size == data_size) 
 // *output;	MFM encoded buffer (size == data_size*2) 
 // Returns the checksum calculated over the data
-unsigned long encodeMFMdataPart1(const unsigned long* input, unsigned long* output, const unsigned int data_size) {
-	unsigned long chksum = 0L;
+uint32_t encodeMFMdataPart1(const uint32_t* input, uint32_t* output, const unsigned int data_size) {
+	uint32_t chksum = 0L;
 	unsigned int count;
 
-	unsigned long* outputOdd = output;
-	unsigned long* outputEven = (unsigned long*)(((unsigned char*)output) + data_size);
+	uint32_t* outputOdd = output;
+	uint32_t* outputEven = (uint32_t*)(((unsigned char*)output) + data_size);
 
 	// Encode over two passes.  First split out the odd and even data, then encode the MFM values, the /4 is because we're working in longs, not bytes
 	for (count = 0; count < data_size / 4; count++) {
@@ -301,11 +301,11 @@ bool decodeSector(const RawEncodedSector& rawSector, const unsigned int trackNum
 	unsigned char* sectorData = (unsigned char*)rawSector;
  
 	// Read the first 4 bytes (8).  This  is the track header data	
-	sector.headerChecksumCalculated = decodeMFMdata((unsigned long*)(sectorData + 8), (unsigned long*)&sector, 4);
+	sector.headerChecksumCalculated = decodeMFMdata((uint32_t*)(sectorData + 8), (uint32_t*)&sector, 4);
 	// Decode the label data and update the checksum
-	sector.headerChecksumCalculated ^= decodeMFMdata((unsigned long*)(sectorData + 16), (unsigned long*)&sector.sectorLabel[0], 16);
+	sector.headerChecksumCalculated ^= decodeMFMdata((uint32_t*)(sectorData + 16), (uint32_t*)&sector.sectorLabel[0], 16);
 	// Get the checksum for the header
-	decodeMFMdata((unsigned long*)(sectorData + 48), (unsigned long*)&sector.headerChecksum, 4);  // (computed on mfm longs, longs between offsets 8 and 44 == 2 * (1 + 4) longs)
+	decodeMFMdata((uint32_t*)(sectorData + 48), (uint32_t*)&sector.headerChecksum, 4);  // (computed on mfm longs, longs between offsets 8 and 44 == 2 * (1 + 4) longs)
 	// If the header checksum fails we just cant trust anything we received, so we just drop it
 	if ((sector.headerChecksum != sector.headerChecksumCalculated) && (!ignoreHeaderChecksum)) {
 		return false;
@@ -329,7 +329,7 @@ bool decodeSector(const RawEncodedSector& rawSector, const unsigned int trackNum
 	if (sector.trackNumber != targetTrackNumber) return false; // this'd be weird
 
 	// Get the checksum for the data
-	decodeMFMdata((unsigned long*)(sectorData + 56), (unsigned long*)&sector.dataChecksum, 4);
+	decodeMFMdata((uint32_t*)(sectorData + 56), (uint32_t*)&sector.dataChecksum, 4);
 	
 
 	// Lets see if we already have this one
@@ -342,7 +342,7 @@ bool decodeSector(const RawEncodedSector& rawSector, const unsigned int trackNum
 	if (index != decodedTrack.validSectors.end()) return true;
 
 	// Decode the data and receive it's checksum
-	sector.dataChecksumCalculated = decodeMFMdata((unsigned long*)(sectorData + 64), (unsigned long*)&sector.data[0], SECTOR_BYTES); // (from 64 to 1088 == 2*512 bytes)
+	sector.dataChecksumCalculated = decodeMFMdata((uint32_t*)(sectorData + 64), (uint32_t*)&sector.data[0], SECTOR_BYTES); // (from 64 to 1088 == 2*512 bytes)
 
 	// Is the data valid?
 	if (sector.dataChecksum != sector.dataChecksumCalculated) {
@@ -384,15 +384,15 @@ void encodeSector(const unsigned int trackNumber, const DiskSurface surface, con
 	header.sectorsRemaining = NUM_SECTORS_PER_TRACK - sectorNumber;  //1..11
 	
 	
-	header.headerChecksumCalculated = encodeMFMdataPart1((const unsigned long*)&header, (unsigned long*)&encodedSector[8], 4);
+	header.headerChecksumCalculated = encodeMFMdataPart1((const uint32_t*)&header, (uint32_t*)&encodedSector[8], 4);
 	// Then theres the 16 bytes of the volume label that isnt used anyway
-	header.headerChecksumCalculated ^= encodeMFMdataPart1((const unsigned long*)&header.sectorLabel, (unsigned long*)&encodedSector[16], 16);
+	header.headerChecksumCalculated ^= encodeMFMdataPart1((const uint32_t*)&header.sectorLabel, (uint32_t*)&encodedSector[16], 16);
 	// Thats 40 bytes written as everything doubles (8+4+4+16+16). - Encode the header checksum
-	encodeMFMdataPart1((const unsigned long*)&header.headerChecksumCalculated, (unsigned long*)&encodedSector[48], 4);
+	encodeMFMdataPart1((const uint32_t*)&header.headerChecksumCalculated, (uint32_t*)&encodedSector[48], 4);
 	// And move on to the data section.  Next should be the checksum, but we cant encode that until we actually know its value!
-	header.dataChecksumCalculated = encodeMFMdataPart1((const unsigned long*)&input, (unsigned long*)&encodedSector[64], SECTOR_BYTES);
+	header.dataChecksumCalculated = encodeMFMdataPart1((const uint32_t*)&input, (uint32_t*)&encodedSector[64], SECTOR_BYTES);
 	// And add the checksum
-	encodeMFMdataPart1( (const unsigned long*)&header.dataChecksumCalculated, (unsigned long*)&encodedSector[56], 4);
+	encodeMFMdataPart1( (const uint32_t*)&header.dataChecksumCalculated, (uint32_t*)&encodedSector[56], 4);
 
 	// Now fill in the MFM clock bits
 	bool lastBit = encodedSector[7] & (1 << 0);
@@ -418,14 +418,14 @@ void encodeSector(const unsigned int trackNumber, const DiskSurface surface, con
 // Find sectors within raw data read from the drive by searching bit-by-bit for the SYNC bytes
 void findSectors(const RawTrackData& track, unsigned int trackNumber, DiskSurface side, unsigned short trackSync, DecodedTrack& decodedTrack, bool ignoreHeaderChecksum) {
 	// Work out what we need to search for which is 2AAAAAAAsyncsync
-	//const unsigned long long search = (trackSync | (((DWORD)trackSync) << 16)) | (((long long)0x2AAAAAAA) << 32);
+	//const uint32_t long search = (trackSync | (((DWORD)trackSync) << 16)) | (((long long)0x2AAAAAAA) << 32);
 	// For speed and to ignore some data errors, we now just search for syncsync and ignore the 2AAAAAAA part
 
 	// Work out what we need to search for which is syncsync
-	const unsigned long search = (trackSync | (((unsigned long)trackSync) << 16));
+	const uint32_t search = (trackSync | (((uint32_t)trackSync) << 16));
 
 	// Prepare our test buffer
-	unsigned long decoded = 0;
+	uint32_t decoded = 0;
 
 	// Keep runnign until we run out of data
 	unsigned int byteIndex = 0;
@@ -666,7 +666,6 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 		m_device.selectTrack(3);
 
 		std::chrono::time_point<std::chrono::steady_clock> start = std::chrono::steady_clock::now();
-		messageOutput(false, "Testing Disk Change pin.");
 		messageOutput(false, "*** Please remove disk from drive *** (you have 30 seconds)");
 		while (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() < 30000) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(250));
@@ -1243,7 +1242,7 @@ struct SCPFileHeader {
 	unsigned char	bitcellEncoding;
 	unsigned char	numHeads;
 	unsigned char   timeBase;
-	unsigned long	checksum;
+	uint32_t	checksum;
 };
 
 struct SCPTrackHeader {
@@ -1252,9 +1251,9 @@ struct SCPTrackHeader {
 };
 
 struct SCPTrackRevolution {
-	unsigned long	indexTime;		// Time in NS/25 for this revolution
-	unsigned long	trackLength;	// Number of bit-cells in this revolution
-	unsigned long	dataOffset;		// From the start of SCPTrackHeader 
+	uint32_t	indexTime;		// Time in NS/25 for this revolution
+	uint32_t	trackLength;	// Number of bit-cells in this revolution
+	uint32_t	dataOffset;		// From the start of SCPTrackHeader 
 };
 
 // Track data is 16-bit value in NS/25.  If =0 means no flux transition for max time 
@@ -1324,7 +1323,7 @@ ADFResult ADFWriter::DiskToSCP(const std::wstring& outputFile, const unsigned in
 	}
 
 	// Pad out the records.  Theres 4 bytes for each track
-	unsigned long notPresent = 0;
+	uint32_t notPresent = 0;
 	for (unsigned int a = 0; a <168; a++) {
 		try {
 			hADFFile.write((const char*)&notPresent, sizeof(notPresent));
@@ -1433,7 +1432,7 @@ ADFResult ADFWriter::DiskToSCP(const std::wstring& outputFile, const unsigned in
 			}
 
 			// Get the current position
-			unsigned long currentPosition = (unsigned long)hADFFile.tellp();
+			uint32_t currentPosition = (uint32_t)hADFFile.tellp();
 
 			// Move to the beginning of the file, and write the offset for where this starts
 			hADFFile.seekp(sizeof(header) + (track.header.trackNumber * 4), std::fstream::beg);
@@ -1487,7 +1486,7 @@ ADFResult ADFWriter::DiskToSCP(const std::wstring& outputFile, const unsigned in
 	while (hADFFile.good()) {
 		try {
 			hADFFile.read((char*)buffer, sizeof(buffer));
-			const unsigned long read = sizeof(buffer) / 4;
+			const uint32_t read = sizeof(buffer) / 4;
 			for (size_t pos = 0; pos < read; pos++)
 				header.checksum += buffer[pos];
 		}
