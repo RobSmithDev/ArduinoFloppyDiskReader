@@ -21,6 +21,7 @@
 // Example console application for reading and writing floppy disks to and from ADF files //
 ////////////////////////////////////////////////////////////////////////////////////////////
 
+
 #include "ADFWriter.h"
 #include "ArduinoInterface.h"
 #ifdef _WIN32
@@ -80,13 +81,126 @@ using namespace ArduinoFloppyReader;
 
 ADFWriter writer;
 
+// Settings type
+struct SettingName {
+	const wchar_t* name;
+	const char* description;
+};
+
+#define MAX_SETTINGS 4
+
+// All Settings
+const SettingName AllSettings[MAX_SETTINGS] = {
+	{L"DISKCHANGE","Force DiskChange Detection Support (used if pin 12 is not connected to GND)"},
+	{L"PLUS","Set DrawBridge Plus Mode (when Pin 4 and 8 are swapped for improved accuracy)"},
+	{L"ALLDD","Force All Disks to be Detected as Double Density (faster if you don't need HD support)"},
+	{L"SLOW","Use Slower Disk Seeking (for slow head-moving floppy drives - rare)"}
+}; 
+
+// Stolen from https://stackoverflow.com/questions/11635/case-insensitive-string-comparison-in-c
+// A wide-string case insensative compare of strings
+bool iequals(const std::wstring& a, const std::wstring& b) {
+	return std::equal(a.begin(), a.end(), b.begin(), b.end(), [](wchar_t a, wchar_t b) {
+		return tolower(a) == tolower(b);
+		});
+}
+bool iequals(const std::string& a, const std::string& b) {
+	return std::equal(a.begin(), a.end(), b.begin(), b.end(), [](char a, char b) {
+		return tolower(a) == tolower(b);
+		});
+}
+
+
+void internalListSettings(ArduinoFloppyReader::ArduinoInterface& io) {
+	for (int a = 0; a < MAX_SETTINGS; a++) {
+		bool value = false;;
+		switch (a) {
+		case 0:io.eeprom_IsAdvancedController(value); break;
+		case 1:io.eeprom_IsDrawbridgePlusMode(value); break;
+		case 2:io.eeprom_IsDensityDetectDisabled(value); break;
+		case 3:io.eeprom_IsSlowSeekMode(value); break;
+		}
+		printf("[%s] %ls \t%s\n", value ? "X" : " ", AllSettings[a].name, AllSettings[a].description);
+	}
+	printf("\n");
+}
+
+void listSettings(const std::wstring& port) {
+	ArduinoFloppyReader::ArduinoInterface io;
+	printf("Attempting to read settings from device on port: %ls\n\n", port.c_str());
+
+	ArduinoFloppyReader::DiagnosticResponse resp = io.openPort(port);
+	if (resp != ArduinoFloppyReader::DiagnosticResponse::drOK) {
+		printf("Unable to connect to device: \n");
+		printf(io.getLastErrorStr().c_str());
+		return;
+	}
+
+	ArduinoFloppyReader::FirmwareVersion version = io.getFirwareVersion();
+	if ((version.major == 1) && (version.minor < 9)) {
+		printf("This feature requires firmware V1.9\n");
+		return;
+	}
+
+	internalListSettings(io);
+}
+
+void programmeSetting(const std::wstring& port, const std::wstring& settingName, const bool settingValue) {
+	ArduinoFloppyReader::ArduinoInterface io;
+	printf("Attempting to set settings to device on port: %ls\n\n", port.c_str()); 
+	ArduinoFloppyReader::DiagnosticResponse resp = io.openPort(port);
+	if (resp != ArduinoFloppyReader::DiagnosticResponse::drOK) {
+		printf("Unable to connect to device: \n");
+		printf(io.getLastErrorStr().c_str());
+		return;
+	}
+
+	ArduinoFloppyReader::FirmwareVersion version = io.getFirwareVersion();
+	if ((version.major == 1) && (version.minor < 9)) {
+		printf("This feature requires firmware V1.9\n");
+		return;
+	}
+
+	// See which one it is
+	for (int a = 0; a < MAX_SETTINGS; a++) {
+		std::wstring s = AllSettings[a].name;
+		if (iequals(s,  settingName)) {
+			
+			switch (a) {
+			case 0:io.eeprom_SetAdvancedController(settingValue); break;
+			case 1:io.eeprom_SetDrawbridgePlusMode(settingValue); break;
+			case 2:io.eeprom_SetDensityDetectDisabled(settingValue); break;
+			case 3:io.eeprom_SetSlowSeekMode(settingValue); break;
+			}
+
+			printf("Settng Set.  Current settings are now:\n\n");
+			internalListSettings(io);
+			return;
+		}
+	}
+	printf("Setting %ls was not found.\n\n", settingName.c_str());
+}
+
+
 
 // Read an ADF file and write it to disk
 void adf2Disk(const std::wstring& filename, bool verify) {
 	printf("\nWrite disk from ADF mode\n\n");
 	if (!verify) printf("WARNING: It is STRONGLY recommended to write with verify support turned on.\r\n\r\n");
 
-	ADFResult result = writer.ADFToDisk(filename,verify,true, [](const int currentTrack, const DiskSurface currentSide, bool isVerifyError) ->WriteResponse {
+	bool hdMode = false;
+
+	// Detect disk speed
+	const ArduinoFloppyReader::FirmwareVersion v = writer.getFirwareVersion();
+
+	if (((v.major == 1) && (v.minor >= 9)) || (v.major > 1)) {
+		if (writer.GuessDiskDensity(hdMode) != ArduinoFloppyReader::ADFResult::adfrComplete) {
+			printf("Unable to work out the density of the disk inserted.\n");
+			return;
+		}
+	}
+
+	ADFResult result = writer.ADFToDisk(filename, hdMode, verify,true, false,true, [](const int currentTrack, const DiskSurface currentSide, bool isVerifyError, const CallbackOperation operation) ->WriteResponse {
 		if (isVerifyError) {
 			char input;
 			do {
@@ -113,6 +227,12 @@ void adf2Disk(const std::wstring& filename, bool verify) {
 
 	switch (result) {
 	case ADFResult::adfrComplete:					printf("\rADF file written to disk                                                           "); break;
+	case ArduinoFloppyReader::ADFResult::adfrExtendedADFNotSupported:	printf("\rExtended ADF files are not currently supported.                                    "); break;
+	case ArduinoFloppyReader::ADFResult::adfrMediaSizeMismatch:			if (hdMode)
+																			printf("\rDisk in drive was detected as HD, but a DD ADF file supplied.                      "); else
+																			printf("\rDisk in drive was detected as DD, but an HD ADF file supplied.                     ");
+																		break;
+	case ADFResult::adfrFirmwareTooOld:             printf("\rCannot write this file, you need to upgrade the firmware first.                    "); break;
 	case ADFResult::adfrCompletedWithErrors:		printf("\rADF file written to disk but there were errors during verification                 "); break;
 	case ADFResult::adfrAborted:					printf("\rWriting ADF file to disk                                                           "); break;
 	case ADFResult::adfrFileError:					printf("\rError opening ADF file.                                                            "); break;
@@ -123,18 +243,6 @@ void adf2Disk(const std::wstring& filename, bool verify) {
 	}
 }
 
-// Stolen from https://stackoverflow.com/questions/11635/case-insensitive-string-comparison-in-c
-// A wide-string case insensative compare of strings
-bool iequals(const std::wstring& a, const std::wstring& b) {
-	return std::equal(a.begin(), a.end(),b.begin(), b.end(),[](wchar_t a, wchar_t b) {
-			return tolower(a) == tolower(b);
-	});
-}
-bool iequals(const std::string& a, const std::string& b) {
-	return std::equal(a.begin(), a.end(),b.begin(), b.end(),[](char a, char b) {
-			return tolower(a) == tolower(b);
-	});
-}
 
 // Read a disk and save it to ADF or SCP files
 void disk2ADF(const std::wstring& filename) {
@@ -148,8 +256,20 @@ void disk2ADF(const std::wstring& filename) {
 
 	if (isADF) printf("\nCreate ADF from disk mode\n\n"); else printf("\nCreate SCP file from disk mode\n\n");
 
-	// Get the current firmware version.  Only valid if openDevice is successful
+	bool hdMode = false;
+
+	// Detect disk speed
 	const ArduinoFloppyReader::FirmwareVersion v = writer.getFirwareVersion();
+
+	if (((v.major == 1) && (v.minor >= 9)) || (v.major > 1)) {
+		if (writer.GuessDiskDensity(hdMode) != ArduinoFloppyReader::ADFResult::adfrComplete) {
+			printf("Unable to work out the density of the disk inserted.\n");
+			return;
+		}
+	}
+
+
+	// Get the current firmware version.  Only valid if openDevice is successful
 	if ((v.major == 1) && (v.minor < 8)) {
 		if (!isADF) {
 			printf("This requires firmware V1.8 or newer.\n");
@@ -162,7 +282,7 @@ void disk2ADF(const std::wstring& filename) {
 		}
 	}
 
-	auto callback = [isADF](const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound) ->WriteResponse {
+	auto callback = [isADF, hdMode](const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound, const int totalSectors, const CallbackOperation operation) ->WriteResponse {
 		if (retryCounter > 20) {
 			char input;
 			do {
@@ -180,10 +300,10 @@ void disk2ADF(const std::wstring& filename) {
 			}
 		}
 		if (isADF) {
-			printf("\rReading Track %i, %s side (retry: %i) - Got %i/11 sectors (%i bad found)   ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower", retryCounter, sectorsFound, badSectorsFound);
+			printf("\rReading %s Track %i, %s side (retry: %i) - Got %i/%i sectors (%i bad found)   ", hdMode ? "HD" : "DD", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower", retryCounter, sectorsFound, totalSectors, badSectorsFound);
 		}
 		else {
-			printf("\rReading Track %i, %s side   ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
+			printf("\rReading %s Track %i, %s side   ", hdMode ? "HD" : "DD", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
 		}
 #ifndef _WIN32
 		fflush(stdout);		
@@ -193,7 +313,7 @@ void disk2ADF(const std::wstring& filename) {
 
 	ADFResult result;
 	
-	if (isADF) result = writer.DiskToADF(filename, 80, callback); else result = writer.DiskToSCP(filename, 80, 3, callback);
+	if (isADF) result = writer.DiskToADF(filename, hdMode, 80, callback); else result = writer.DiskToSCP(filename, hdMode, 80, 3, callback);
 
 	switch (result) {
 	case ADFResult::adfrComplete:					printf("\rFile created successfully.                                                     "); break;
@@ -245,11 +365,11 @@ int wmain(int argc, wchar_t* argv[], wchar_t *envp[])
 int main(int argc, char* argv[], char *envp[])
 #endif
 {
-	printf("Arduino Amiga ADF & SCP Floppy Disk Reader/Writer V2.6, Copyright (C) 2017-2021 Robert Smith\r\n");
+	printf("DrawBridge aka Arduino Floppy Disk Reader/Writer V2.7, Copyright (C) 2017-2021 Robert Smith\r\n");
 	printf("Full sourcecode and documentation at https://amiga.robsmithdev.co.uk\r\n");
 	printf("This is free software licenced under the GNU General Public Licence V3\r\n\r\n");
 
-	if (argc < 3) {
+	if (argc < 2) {
 		printf("Usage:\r\n\n");
 		printf("To read a disk to an ADF file:\r\n");
 		printf("ArduinoFloppyReader <COMPORT> OutputFilename.ADF [READ]\r\n\r\n");
@@ -259,8 +379,12 @@ int main(int argc, char* argv[], char *envp[])
 		printf("ArduinoFloppyReader <COMPORT> InputFilename.ADF WRITE [VERIFY]\r\n\r\n");
 		printf("To start interface diagnostics:\r\n");
 		printf("ArduinoFloppyReader <COMPORT> DIAGNOSTIC\r\n\r\n");
-		printf("Detected Serial Devices:\r\n");
+		printf("To see the current EEPROM Ssettings:\r\n");
+		printf("ArduinoFloppyReader <COMPORT> SETTINGS\r\n\r\n");
+		printf("To set the status of one of the see EEPROM settings:\r\n");
+		printf("ArduinoFloppyReader <COMPORT> SETTINGS SET <NAME> 0/1\r\n\r\n");
 
+		printf("Detected Serial Devices:\r\n");
 		std::vector<std::wstring> portList;
 		ArduinoFloppyReader::ArduinoInterface::enumeratePorts(portList);
 		for (const std::wstring& port : portList)
@@ -269,6 +393,43 @@ int main(int argc, char* argv[], char *envp[])
 
 		return 0;
 	}
+
+#ifdef _WIN32
+	std::wstring port = argv[1];
+	int i = _wtoi(argv[1]);
+	if (i) port = L"COM" + std::to_wstring(i); else port = argv[1];
+#else
+	std::wstring port = atw(argv[1]);
+#endif
+
+#ifdef _WIN32
+	bool eepromMode = (argc > 2) && (iequals(argv[2], L"SETTINGS"));
+#else
+	bool eepromMode = (argc > 2) && (iequals(argv[2], "SETTINGS"));
+#endif
+
+	if (eepromMode) {
+
+		if (argc >= 4) {
+#ifdef _WIN32
+			bool settingValue = iequals(argv[4], L"1");
+			std::wstring settingName = argv[3];
+			std::wstring port = argv[1];
+			int i = _wtoi(argv[1]);
+			if (i) port = L"COM" + std::to_wstring(i); else port = argv[1];
+#else
+			bool settingValue = iequals(argv[4], "1");
+			std::wstring settingName = atw(argv[3]);
+			std::wstring port = atw(argv[1]);
+#endif
+			programmeSetting(port, settingName, settingValue);
+			return 0;
+		}
+
+		listSettings(port);
+		return 0;
+	}
+
 	
 #ifdef _WIN32	
 	bool writeMode = (argc > 3) && (iequals(argv[3], L"WRITE"));
@@ -276,13 +437,10 @@ int main(int argc, char* argv[], char *envp[])
 	if (argc >= 2) {
 		std::wstring port = argv[1];
 		std::wstring filename = argv[2];
-		int i = _wtoi(argv[1]);
-		if (i) port = L"COM" + std::to_wstring(i); else port = argv[1];
 #else
 	bool writeMode = (argc > 3) && (iequals(argv[3], "WRITE"));
 	bool verify = (argc > 4) && (iequals(argv[4], "VERIFY"));
 	if (argc >= 2) {
-		std::wstring port = atw(argv[1]);
 		std::wstring filename = atw(argv[2]);
 #endif
 		if (iequals(filename, L"DIAGNOSTIC")) {

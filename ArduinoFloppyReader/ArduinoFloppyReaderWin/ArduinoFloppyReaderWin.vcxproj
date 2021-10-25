@@ -23,6 +23,7 @@
     <RootNamespace>ArduinoFloppyReaderWin</RootNamespace>
     <WindowsTargetPlatformVersion>10.0.18362.0</WindowsTargetPlatformVersion>
     <Keyword>MFCProj</Keyword>
+    <ProjectName>DrawBridgeWin</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -98,7 +99,7 @@
       <PrecompiledHeader>Use</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>USING_MFC;WIN32;_WINDOWS;_DEBUG;%(PreprocessorDefinitions);_WIN32_WINNT=0x0601</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_WINSOCK_DEPRECATED_NO_WARNINGS;USING_MFC;WIN32;_WINDOWS;_DEBUG;%(PreprocessorDefinitions);_WIN32_WINNT=0x0601</PreprocessorDefinitions>
       <SDLCheck>true</SDLCheck>
     </ClCompile>
     <Link>
@@ -121,7 +122,7 @@
       <PrecompiledHeader>Use</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>_WINDOWS;_DEBUG;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions);_WIN32_WINNT=0x0601</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_WINSOCK_DEPRECATED_NO_WARNINGS;_WINDOWS;_DEBUG;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions);_WIN32_WINNT=0x0601</PreprocessorDefinitions>
       <SDLCheck>true</SDLCheck>
     </ClCompile>
     <Link>
@@ -145,7 +146,7 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>USING_MFC;WIN32;_WINDOWS;NDEBUG;%(PreprocessorDefinitions);_WIN32_WINNT=0x0601</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_WINSOCK_DEPRECATED_NO_WARNINGS;USING_MFC;WIN32;_WINDOWS;NDEBUG;%(PreprocessorDefinitions);_WIN32_WINNT=0x0601</PreprocessorDefinitions>
       <SDLCheck>true</SDLCheck>
     </ClCompile>
     <Link>
@@ -172,7 +173,7 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>_WINDOWS;NDEBUG;%(PreprocessorDefinitions);_WIN32_WINNT=0x0601</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_WINSOCK_DEPRECATED_NO_WARNINGS;_WINDOWS;NDEBUG;%(PreprocessorDefinitions);_WIN32_WINNT=0x0601</PreprocessorDefinitions>
       <SDLCheck>true</SDLCheck>
     </ClCompile>
     <Link>
@@ -197,10 +198,18 @@
   <ItemGroup>
     <ClInclude Include="..\lib\ADFWriter.h" />
     <ClInclude Include="..\lib\ArduinoInterface.h" />
+    <ClInclude Include="..\lib\ftdi.h" />
     <ClInclude Include="..\lib\RotationExtractor.h" />
     <ClInclude Include="..\lib\SerialIO.h" />
     <ClInclude Include="ArduinoFloppyReaderWin.h" />
     <ClInclude Include="ArduinoFloppyReaderWinDlg.h" />
+    <ClInclude Include="CAboutDialog.h" />
+    <ClInclude Include="CCompleteDialog.h" />
+    <ClInclude Include="CDiagnosticsDlg.h" />
+    <ClInclude Include="CEEPromDialog.h" />
+    <ClInclude Include="CReadFromDiskPage.h" />
+    <ClInclude Include="CRunningDlg.h" />
+    <ClInclude Include="CWriteToDiskPage.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="targetver.h" />
@@ -218,6 +227,10 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\lib\ftdi.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\lib\RotationExtractor.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
@@ -230,6 +243,10 @@
     </ClCompile>
     <ClCompile Include="ArduinoFloppyReaderWin.cpp" />
     <ClCompile Include="ArduinoFloppyReaderWinDlg.cpp" />
+    <ClCompile Include="CCompleteDialog.cpp" />
+    <ClCompile Include="CReadFromDiskPage.cpp" />
+    <ClCompile Include="CRunningDlg.cpp" />
+    <ClCompile Include="CWriteToDiskPage.cpp" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
@@ -248,6 +265,7 @@
     <Image Include="..\..\..\..\Websites\amiga\favicon.ico" />
     <Image Include="..\..\..\..\Websites\amiga\images\floppy.png" />
     <Image Include="res\ArduinoFloppyReaderWin.ico" />
+    <Image Include="res\dialog_o.bmp" />
     <Image Include="res\fin.bmp" />
     <Image Include="res\fin2.bmp" />
     <Image Include="res\finpartial.bmp" />

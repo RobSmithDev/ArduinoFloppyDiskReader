@@ -8,7 +8,7 @@
 # define the C compiler to use
 CC = g++
 
-# define any compile-time flags
+# define any compile-time flags -m32
 CFLAGS = -Wall -std=c++14 -Wno-psabi -O3
 
 # define any directories containing header files other than /usr/include
@@ -23,10 +23,10 @@ LFLAGS = -L../lib
 # define any libraries to link into executable:
 #   if I want to link in libraries (libx.so or libx.a) I use the -llibname 
 #   option, something like (this will link in libmylib.so and libm.so:
-LIBS = 
+LIBS = -ldl
 
 # define the C source files
-SRCS = Main.cpp ../lib/SerialIO.cpp ../lib/RotationExtractor.cpp ../lib/ArduinoInterface.cpp ../lib/ADFWriter.cpp 
+SRCS = Main.cpp ../lib/ftdi.cpp ../lib/SerialIO.cpp ../lib/RotationExtractor.cpp ../lib/ArduinoInterface.cpp ../lib/ADFWriter.cpp 
 
 # define the C object files 
 #
@@ -39,7 +39,7 @@ SRCS = Main.cpp ../lib/SerialIO.cpp ../lib/RotationExtractor.cpp ../lib/ArduinoI
 OBJS = $(SRCS:.c=.o)
 
 # define the executable file 
-MAIN = ArduinoReaderWriter
+MAIN = drawbridge
 
 #
 # The following part of the makefile is generic; it can be used to 
@@ -50,7 +50,7 @@ MAIN = ArduinoReaderWriter
 .PHONY: depend clean
 
 all:    $(MAIN)
-		@echo  ArduinoReaderWriter ready
+		@echo  drawbridge ready
 
 $(MAIN): $(OBJS) 
 		$(CC) $(CFLAGS) $(INCLUDES) -o $(MAIN) $(OBJS) $(LFLAGS) $(LIBS)

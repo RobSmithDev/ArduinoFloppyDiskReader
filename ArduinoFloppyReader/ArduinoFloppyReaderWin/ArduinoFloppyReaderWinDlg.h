@@ -26,6 +26,11 @@
 #include "afxcmn.h"
 #include <thread>
 #include <string>
+#include "CReadFromDiskPage.h"
+#include "CWriteToDiskPage.h"
+#include "CCompleteDialog.h"
+#include "CRunningDlg.h"
+#include <vector>
 
 
 // CArduinoFloppyReaderWinDlg dialog
@@ -35,10 +40,8 @@ class CArduinoFloppyReaderWinDlg : public CDialogEx
 public:
 	CArduinoFloppyReaderWinDlg(CWnd* pParent = NULL);	// standard constructor
 	~CArduinoFloppyReaderWinDlg(); 
-	std::thread* m_iothread;
 	void* m_sfx;
-	bool m_cancelButtonPressed;
-	bool m_partial;
+	unsigned int m_updateStatus = 0;
 
 	void enumComPorts();
 	std::wstring getComPort();
@@ -56,6 +59,8 @@ public:
 // Implementation
 protected:
 	HICON m_hIcon;
+	HCURSOR m_crHourGlass;
+	HCURSOR m_crHandPointer;
 
 	// Generated message map functions
 	virtual BOOL OnInitDialog();
@@ -63,46 +68,44 @@ protected:
 	afx_msg void OnPaint();
 	afx_msg HCURSOR OnQueryDragIcon();
 	DECLARE_MESSAGE_MAP()
-public:
-	afx_msg void OnBnClickedStartstop();
-	afx_msg void OnBnClickedBrowse();
-	void enableDialog(bool enable);
 
-	afx_msg LRESULT OnUserMessage(WPARAM wparam, LPARAM lparam);
+private:
+	std::vector< CWnd*> m_pages;
+
+	void addTab(CWnd* page, std::wstring name);
+public:
+	CReadFromDiskPage* m_readPage;
+	CWriteToDiskPage* m_writePage;
 
 	CComboBox m_comport;
-	CEdit m_outputADF;
-	CProgressCtrl m_progressbar;
-	CStatic m_statusTrack;
-	CStatic m_statusSide;
-	CStatic m_statusGood;
-	CStatic m_statusPartial;
-	CButton m_browseButton;
-	CButton m_copyButton;
-	CStatic m_statusText;
-	CEdit m_inputADF;
-	CButton m_browseButton2;
-	CButton m_writeButton;
-	CButton m_verify;
-	CButton m_trk80;
-	CButton m_trk82;
-	CButton m_precomp;
+	CButton m_diagnostics;
+	std::thread* m_updateCheck = nullptr;
 
 	// Main thread loop
-	bool runThreadRead();
-	void threadFinishedReading(bool successful);
-	bool runThreadWrite();
-	void threadFinishedWriting(bool successful);
-	afx_msg void OnBnClickedBrowse2();
-	afx_msg void OnBnClickedStartstop2();
+	void showCompletedDialog(const CCompleteDialog::CompleteMessage message);
+	void runThreadRead(CRunningDlg* dlg);
+	void runThreadWrite(CRunningDlg* dlg);
+	void WriteToDisk();
+	void ReadFromDisk();
 	void saveComPort();
+
+	// Returns the COM port if its valid and displays an error if not
+	std::wstring checkForComPort();
 	afx_msg void OnBnClickedStartstop3();
-	CButton m_diagnostics;
-//	CButton m_precomp;
-	CComboBox m_fileFormat;
 protected:
 	afx_msg LRESULT OnDevicechange(WPARAM wParam, LPARAM lParam);
 public:
 
-	afx_msg void OnCbnSelchangeDiskformat();
+	CComboBox m_mediadensity;
+	afx_msg void OnBnClickedStartstop4();
+	CButton m_btnConfig;
+	afx_msg void OnTimer(UINT_PTR nIDEvent);
+	CTabCtrl m_mode;
+	afx_msg void OnSelchangeTab(NMHDR* pNMHDR, LRESULT* pResult);
+	afx_msg void OnSelchangingTab(NMHDR* pNMHDR, LRESULT* pResult);
+	afx_msg void OnClose();
+	afx_msg void OnClickedFooter();
+	CStatic m_footer;
+	afx_msg HBRUSH OnCtlColor(CDC* pDC, CWnd* pWnd, UINT nCtlColor);
+	afx_msg BOOL OnSetCursor(CWnd* pWnd, UINT nHitTest, UINT message);
 };

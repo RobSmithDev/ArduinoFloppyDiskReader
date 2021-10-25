@@ -1,7 +1,7 @@
 /* ArduinoFloppyReader (and writer)
 * 
 * Copyright (C) 2017-2021 Robert Smith (@RobSmithDev)
-* http://amiga.robsmithdev.co.uk
+* https://amiga.robsmithdev.co.uk
 *
 * This library is free software; you can redistribute it and/or
 * modify it under the terms of the GNU Library General Public
@@ -31,7 +31,7 @@
 // were taken from the excellent documentation by Laurent Clévy at http://lclevy.free.fr/adflib/adf_info.html
 // Also credits to Keith Monahan https://www.techtravels.org/tag/mfm/ regarding a bug in the MFM sector start data
 //
-// V2.5
+// V2.7
 
 #pragma once
 #include <functional>
@@ -58,7 +58,9 @@ namespace ArduinoFloppyReader {
 						adfrCompletedWithErrors,		// Completed but with sector errors
 						adfrDiskWriteProtected,         // Disk is write protected!
 						adfrDriveError,					// Something wrong with reading the disk
-						adfrFirmwareTooOld				// Firmware is too old
+						adfrFirmwareTooOld,				// Firmware is too old
+						adfrMediaSizeMismatch,			// HD/DD mismatch
+						adfrExtendedADFNotSupported		// Extended ADFs not currently supported
 					};
 
 	enum class AnalysisResult {
@@ -68,6 +70,17 @@ namespace ArduinoFloppyReader {
 							 arDriveError               // Something wrong talking to thre drive
 						};
 
+	enum class CallbackOperation {
+							coStarting,
+							coReading,
+							coWriting,
+							coVerifying,
+							coRetryReading,
+							coRetryWriting,
+							coReVerifying,
+							coReadingFile
+						};
+
 	// Main writer class
 	class ADFWriter {
 	private:
@@ -75,6 +88,9 @@ namespace ArduinoFloppyReader {
 		ArduinoInterface m_device;
 
 	public:  
+		ADFWriter();
+		~ADFWriter();
+
 		// Open the device we want to use.  Returns TRUE if it worked
 		bool openDevice(const std::wstring& portName);
 
@@ -88,20 +104,22 @@ namespace ArduinoFloppyReader {
 
 		// Reads the disk and write the data to the ADF file supplied.  The callback is for progress, and you can returns FALSE to abort the process
 		// numTracks is the number of tracks to read.  Usually 80 (0..79), sometimes track 80 and 81 are needed
-		ADFResult DiskToADF(const std::wstring& outputFile, const unsigned int numTracks, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound)> callback);
+		ADFResult DiskToADF(const std::wstring& outputFile, const bool inHDMode, const unsigned int numTracks, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound, const int maxSectors, const CallbackOperation operation)> callback);
 
 		// Reads the disk and write the data to the SCP file supplied.  The callback is for progress, and you can returns FALSE to abort the process
 		// numTracks is the number of tracks to read.  Usually 80 (0..79), sometimes track 80 and 81 are needed. revolutions is hwo many revolutions of the disk to save (1-5)
 		// SCP files are a low level flux record of the disk and usually can backup copy protected disks to.  Without special hardware they can't usually be written back to disks.
-		ADFResult DiskToSCP(const std::wstring& outputFile, const unsigned int numTracks, const unsigned char revolutions, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound)> callback);
+		ADFResult DiskToSCP(const std::wstring& outputFile, bool isHDMode, const unsigned int numTracks, const unsigned char revolutions, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound, const int maxSectors, const CallbackOperation operation)> callback);
 
 		// Writes an ADF file back to a floppy disk.  Return FALSE in the callback to abort this operation.  If verify is set then the track isread back and and sector checksums are checked for 11 valid sectors
 		// IF using precomp mode then DO NOT connect the Arduino via a USB hub, and try to plug it into a USB2 port
-		ADFResult ADFToDisk(const std::wstring& inputFile, bool verify, bool usePrecompMode, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError) > callback);
+		ADFResult ADFToDisk(const std::wstring& inputFile, const bool inHDMode, bool verify, bool usePrecompMode, bool eraseFirst, bool writeFromIndex, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError, const CallbackOperation operation) > callback);
 	
 		// Run diagnostics on the system.  You do not need to call openDevice first.  Return TRUE if everything passed
 		bool runDiagnostics(const std::wstring& portName, std::function<void(bool isError, const std::string message)> messageOutput, std::function<bool(bool isQuestion, const std::string question)> askQuestion);
 		
+		// Attempt to work out what the density of the currently inserted disk is
+		ADFResult GuessDiskDensity(bool& isHD);
 	};
 
 
