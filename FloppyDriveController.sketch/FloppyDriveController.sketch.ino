@@ -1,4 +1,4 @@
-/* ArduinoFloppyReader (and writer)
+/* DrawBridge a.k.a ArduinoFloppyReader (and writer)
 *
 * Copyright (C) 2017-2021 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
@@ -17,7 +17,14 @@
 * License along with this sketch; if not, see http://www.gnu.org/licenses
 */
 
-/* Latest History: Last Modified: 22/04/2021
+/*******************************************************************************************************************
+ *******************************************************************************************************************
+ *** IF YOU HAVE WIRED THE BOARD FOR DRAWBRIDGE PLUS YOU MUST ENABLE/SET THIS OPTION FROM THE WINDOW APPLICATION ***
+ *** OR THIS BOARD WILL NOT OPERATE CORRECTLY. ALTERNATIVELY, RUN DIAGNOSTICS, WHICH WILL DO THIS FOR YOU        ***
+ *******************************************************************************************************************
+ *******************************************************************************************************************/
+ 
+/* Latest History: Last Modified: 21/10/2021
     Firmware V1.4: Merged with Pull Request #6 (Modified the behavior of the current track location on Arduino boot - paulofduarte) which also addresses issues with some drives
     Firmware V1.5: Merged with Pull Request #9 (Detect and read out HD floppy disks 1.44M by kollokollo)
     Firmware V1.6: Added experimental unbuffered writing HD disk support
@@ -28,7 +35,32 @@
                    Added some new functions which allow for more direct control of the drive
                    Remove the Erase function as discovered you just need to write a longer track to ensure you clear the gap.  Workbench writes 13630 bytes per track. The first part is filler at 0xAA
                    Added support for disk change notifications support (requires small hardware modification below)
-    Firmware V1.8a: Added 'no-click' support
+                   (a) Added 'no-click' support
+    Firmware V1.9.0: Improved accuracy for flux capture for SCP and *UAE
+             V1.9.2: Full HD floppy disk support for DrawBridge Classic
+                     Support for Drawbridge Plus hardware design with higher accuracy capture with less jitter, allows reading of really bad HD disks recorded with terrible flutter.
+                     Added support for slowing down disk seek form slow drives
+                     Added extra commands for accessing the EEPROM to apply settings from the applications
+                     Added extra commands for calculating disk RPM
+                     Added extra commands for detecting DD/HD based on either the HD pin (usually doesnt work) or by sampling data from a disk
+                     Adjusted TIMING_OVERHEAD for DrawBridge Classic design for increased disk read-ability
+                     Added support for PLL in the DD read code for increased reliability.
+              V1.9.3 Adjusted the PLL settings for DD disks for better compatability
+              V1.9.4 Fixed auto-detection of DB vs DB Plus
+                     Fixed a few bugs in the HD code - silly me.  
+              v1.9.5 Fixed small issue with HD mode incorrectly detecting the index pulse     
+              v1.9.6 Increased time used to measure disk to test for DD vs HD
+              v1.9.7 Small changes to the HD reading code
+                     Fixed a problem where a disk with unknown data could cause the 'Check HD/DD' to get stuck
+                     Added a timeout process for reading HD disks whilst in DB Classic without affecting jitter
+              v1.9.8 Removed DD PLL code, was actually reducing performance.
+              v1.9.9 Improved the DD and HD writing code, its much simpler, faster now and guaranteed 100% no jitter.  Timings are EXACT
+              v1.9.10 Updated the HD read for DrawBridge Classic
+              v1.9.11 Small modification to improve reading DD and HD, this is probably at its best now.
+              v1.9.12 Small modification/correction of the DD and HD write timings
+              v1.9.13 Halloween Edition. Small change to delay function to speed up drive stepping
+              v1.9.14 Much faster seek times, makes it sound like a PC drive, but we want speed right?
+              v1.9.15 Added a 'reset' function
 */    
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -40,11 +72,13 @@
 // read data from other disk formats too.                                                    //
 //////////////////////////////////////////////////////////////////////////////////////////////
 
+// ** Hardware Modifications for DrawBridge Plus
+//    Swap Pin 4 and 8 on the Arduino, and use the Windows Tool to set the 'DrawBridge Plus' mode in the EEPROM. Note in this configuration, the 1K resistor goes between pin 8 and 5V
+
 // ** Hardware Modification Changes to get the best support for disk change notifications **
 //    Pin 34 on the floppy drive connector (Disk Ready/Change) must be connected to Pin 10 on the Arduino
 //    Pin 12 on the floppy drive connector (Select Disk B) must be *disconnected* from pin 5 on the Arduino and connected to Pin 11 on the Arduino.  Note you *must* leave the connection between Arduino Pin 5 and Floppy Connector 16 in place
-//    On the Arduino, connect Pin 12 to GND (0v) - this enables this advanced mode automatically.
-//    If you can't connect pin12 to GND because you want to use the ISP headers, then see https://amiga.robsmithdev.co.uk/isp
+//    On the Arduino, connect Pin 12 to GND (0v) - this enables this advanced mode automatically.  Alternativly, use the Windows Tool to set this via EEPROM
 
 #define BAUDRATE 2000000                 // The baudrate that we want to communicate over (2M)
 #define BAUD_PRESCALLER_NORMAL_MODE      (((F_CPU / (BAUDRATE * 16UL))) - 1)
@@ -65,9 +99,16 @@
 #define PIN_WRITE_DATA_MASK      B00001000 // The mask used to set this pin high or low
 
 // PIN 4 - READ DATA
-#define PIN_READ_DATA            4          // Reads RAW floppy data on this pin
+#define PIN_READ_DATA            4          // Reads RAW floppy data on this pin.  In DrawBridge Plus mode, this is PIN_DETECT_TRACK_0
 #define PIN_READ_DATA_MASK       B00010000  // The mask for the port
 #define PIN_READ_DATA_PORT       PIND       // The port the above pin is on
+#define PIN_READ_DATA_PORT_WRITE PORTD
+#define PIN_READ_DATA_IO_DIR     DDRD
+
+// PIN 8 - READ DATA (Drawbridge+)
+#define PIN_READ_DATA_PLUSMODE            8          // Reads RAW floppy data on this pin.  In DrawBridge Plus mode, this is PIN_DETECT_TRACK_0
+#define PIN_READ_DATA_PLUSMODE_MASK       B00000001  // The mask for the port
+#define PIN_READ_DATA_PLUSMODE_PORT       PINB       // The port the above pin is on
 
 // PIN 5, 6 and 7 - DRIVE, HEAD MOTOR DIRECTION and CONTROL
 #define PIN_DRIVE_ENABLE_MOTOR   5        // Turn on and off the motor on the drive
@@ -75,11 +116,10 @@
 #define PIN_MOTOR_STEP           7        // Stepper motor step line to move the head position
 
 // PIN 8 - Used to detect track 0 while moving the head
-#define PIN_DETECT_TRACK_0       8        // Used to see if the drive is at track 0
+#define PIN_DETECT_TRACK_0       8        // Used to see if the drive is at track 0. In DrawBridge+ this is PIN_READ_DATA
 
 // PIN 9 - HEAD SELECTION
 #define PIN_HEAD_SELECT          9        // Choose upper and lower head on the drive
-
 
 // PIN A0 - WRITE GATE (Floppy Write Enable)
 #define PIN_WRITE_GATE           A0        // This pin enables writing to the disk
@@ -94,8 +134,10 @@
 #define PIN_CTS_PORT             PORTC      // Port the CTS pin is on
 #define PIN_CTS_MASK             B00000100  // Binary mask to control it with
 
-// Reserved for future use
+// PIN A3 - Connected to the Density Select Pin on the drive.  On normal PC drives this doesnt do anything, on slimline drives it works as it should
 #define PIN_HD                   A3
+
+// Reserved for future use
 #define PIN_RDY                  A4
 
 // PIN 13 - Activity LED
@@ -106,19 +148,16 @@
 #define PIN_SELECT_DRIVE         11
 #define PIN_DETECT_ADVANCED_MODE 12
 
-
-
-// Detect advanced mode
-bool advancedControllerMode     = false;   // DO NOT CHANGE THIS, it is automatically detected. If you can't connect pin12 to GND because you want to use the ISP headers, then see https://amiga.robsmithdev.co.uk/isp
-
+// These are read from the EEPROM so do not modifiy them
+bool advancedControllerMode     = false;   // DO NOT CHANGE THIS, its automatically detected. If you can't connect pin12 to GND because you want to use the ISP headers, then see https://amiga.robsmithdev.co.uk/isp
+bool drawbridgePlusMode         = false;   // DO NOT CHANGE THIS, its automatically set via EEPROM.  See the Windows Tool for more information
+bool disableDensityDetection    = false;   // DO NOT CHANGE THIS, its automatically set vis EEPROM.  See the Windows Tool for more information
+bool slowerDiskSeeking          = false;   // DO NOT CHANGE THIS, its automatically set vis EEPROM.  See the Windows Tool for more information
 
 // Paula on the Amiga used to find the SYNC WORDS and then read 0x1900 further WORDS.  
 // A dos track is 11968 bytes in size, theritical revolution is 12800 bytes. 
-/* The ATARI ST could format a track with up to 11 Sectors, so the AMIGA settings are OK. */
+// The ATARI ST could format a track with up to 11 Sectors, so the AMIGA settings are OK.
 #define RAW_TRACKDATA_LENGTH   (0x1900*2+0x440)  // Paula assumed it was 12868 bytes, so we read that, plus the size of a sector, to find overlap
-
-/* For the HD (1.4 MBytes) Disks the amount of data should be about 26688: */
-#define RAW_HD_TRACKDATA_LENGTH   (0x1900*2*2+0x440)
 
 // The current track that the head is over. Starts with -1 to identify an unknown head position.
 int currentTrack = -1;
@@ -132,6 +171,7 @@ bool disktypeHD = 0;
 // The timings here could be changed.  These are based on F_CPU=16Mhz, which leaves the resolution at 1 tick = 0.0625usec, hence 16=1uSec
 
 // There's approx 4 clock ticks on average between noticing the flux transition and the counter value being read/reset
+// In DrawBridge Plus mode this is not used.
 #define TIMING_OVERHEAD               -4
 
 // Calculate the bit-timing windows.  These are the ideal exact centre of the next flux transition since the previous.
@@ -146,38 +186,60 @@ bool disktypeHD = 0;
 #define TIMING_DD_UPPER_6us     (TIMING_DD_MIDDLE_6us + 16 + TIMING_OVERHEAD) 
 #define TIMING_DD_UPPER_8us     (TIMING_DD_MIDDLE_8us + 16 + TIMING_OVERHEAD) 
 
-// HD versions
+// HD versions - but these are just used for measure disk etc
 #define TIMING_HD_UPPER_2us     ((TIMING_DD_MIDDLE_4us/2) + 8 + TIMING_OVERHEAD) 
-#define TIMING_HD_UPPER_4us     ((TIMING_DD_MIDDLE_6us/2) + 8 + TIMING_OVERHEAD) 
-#define TIMING_HD_UPPER_6us     ((TIMING_DD_MIDDLE_8us/2) + 8 + TIMING_OVERHEAD) 
+#define TIMING_HD_UPPER_3us     ((TIMING_DD_MIDDLE_6us/2) + 8 + TIMING_OVERHEAD) 
 
-// 256 byte circular buffer - don't change this, we abuse the unsigned char to overflow back to zero!
-#define SERIAL_BUFFER_SIZE 256
-#define SERIAL_BUFFER_START (SERIAL_BUFFER_SIZE-16)
-unsigned char SERIAL_BUFFER[SERIAL_BUFFER_SIZE];
-
-
-
+// This isn't how a proper PLL should work, but its as close as we can get to
+// The deviation from the clock centre is calculated and added over several samples.  If we're at the right rate, the jitter will cancel its self out.
+// If the total reaches this number we adjust the clock speed +/- 1 (62.5us) at a time until it corrects.
+// The smaller number, the faster it adapts, but the more likely general jitter could cause an issue and it not work at all!
+// The larger then it may not correct quick enough.  For bad disks, the speed can actually vary during a single rotation.
+// There's no science behind this number, its just a trial and error with a really bad disk I have
+#define PLL_HD_THRESHOLD     48
+// The default position for the PLL to start in. -8 is the best position for a 100% ideal disk
+#define PLL_HD_START_VALUE   -8
+// Center position reading HD disks in DB classic mode (this is TIMING_OVERHEAD+DB_CLASSIC_HD_MIDDLE) - this was checked to give the best result with jitter
+#define DB_CLASSIC_HD_MIDDLE -2
 
 #include <EEPROM.h>
+#include <avr/wdt.h>
 
-// Because we turned off interrupts delay() doesnt work! This is approx ms
+// Because we turned off interrupts delay() doesnt work! This is accurate at the millisecond level
 void smalldelay(unsigned long delayTime) {
-    delayTime*=(F_CPU/(8*1000L));
-  
-    for (unsigned long loops=0; loops<delayTime; ++loops) {
-        asm volatile("nop\n\t"::);
+    // Use timer 0 to count the correct number of ms
+    TCCR0A = 0;         // Simple counter
+    TCCR0B = bit(CS01) | bit(CS00); // Prescaler of divide by 64.  So if F_CPU=16000000, 250 clock ticks occur in 1ms second
+
+    for (unsigned long i=0; i<delayTime; i++) {
+       TCNT0 = 0;             // Reset counter;
+       while (TCNT0<250) {};  // wait 1ms, we could do this more accuratly, but im not bothered
     }
+    TCCR0B = 0; // turn off
+}
+
+// Because we turned off interrupts delay() doesnt work! This delays in 100us intervals, ie: delaytime=10 would be 1ms
+void smalldelay100us(unsigned long delayTime) {
+    // Use timer 0 to count the correct number of us
+    TCCR0A = 0;         // Simple counter
+    TCCR0B =bit(CS01); // Prescaler of divide by 8.  So if F_CPU=16000000, 250 clock ticks occur in 1ms second
+    for (unsigned long i=0; i<delayTime; i++) {
+       TCNT0 = 0;              // Reset counter;
+       while (TCNT0<200) {};   // wait 100us, we could do this more accuratly, but im not bothered
+    }
+    TCCR0B = 0; // turn off
 }
 
 // Step the head once.  This seems to be an acceptable speed for the head
 // Drive spec says pulse should be at least 3ms, but the time between pulses must be greater than 1us.  16 NOPS is approx 1us, so im just being cautious
-void stepDirectionHead() {
+void stepDirectionHead(unsigned long delayTime100usIntervals = 35) {
     asm volatile("nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"::);
     digitalWrite(PIN_MOTOR_STEP,LOW);
-    smalldelay(3);    // drive pulse must be at least 3ms long
+    smalldelay100us(delayTime100usIntervals);    
+    if (slowerDiskSeeking) smalldelay(2);
     digitalWrite(PIN_MOTOR_STEP,HIGH);
     asm volatile("nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"::);
+    if (slowerDiskSeeking) smalldelay(2);
 }
 
 // Prepare serial port - We dont want to use the arduino serial library as we want to use faster speeds and no serial interrupts
@@ -245,6 +307,7 @@ void setup() {
     digitalWrite(PIN_ACTIVITY_LED,LOW);
     digitalWrite(PIN_SELECT_DRIVE,HIGH);
 
+    pinMode(PIN_HD, INPUT_PULLUP);
     pinMode(PIN_WRITE_GATE,OUTPUT);
     pinMode(PIN_WRITE_DATA,OUTPUT);
     pinMode(PIN_CTS,OUTPUT);
@@ -257,21 +320,9 @@ void setup() {
 
     pinMode(PIN_INDEX_DETECTED,INPUT_PULLUP);
     pinMode(PIN_DISK_CHANGE,INPUT_PULLUP);    
-   
-    // Has this hardware been updated? - If you can't connect pin12 to GND because you want to use the ISP headers, then see https://amiga.robsmithdev.co.uk/isp
-    advancedControllerMode = digitalRead(PIN_DETECT_ADVANCED_MODE) == LOW;
 
-    if (!advancedControllerMode) {
-       unsigned char b1,b2,b3,b4;
-       EEPROM.get(0, b1);
-       EEPROM.get(1, b2);
-       EEPROM.get(2, b3);
-       EEPROM.get(3, b4);
+    refreshEEPROMSettings();
 
-       // If you can't connect pin12 to GND because you want to use the ISP headers, then see https://amiga.robsmithdev.co.uk/isp
-       if ((b1 == 0x52) && (b2 == 0x6F) && (b3 == 0x62) && (b4 == 0x53)) advancedControllerMode = true;
-    } 
-   
     // Disable all interrupts - we dont want them!
     cli();
     TIMSK0=0;
@@ -287,7 +338,57 @@ void setup() {
     prepSerialInterface();
 }
 
-// Run a diagnostics test command
+// Refresh bools after eeprom has been written to
+void refreshEEPROMSettings() {
+    // Has this hardware been updated? - If you can't connect pin12 to GND because you want to use the ISP headers, then see https://amiga.robsmithdev.co.uk/isp
+    advancedControllerMode = digitalRead(PIN_DETECT_ADVANCED_MODE) == LOW;
+    
+    if (!advancedControllerMode) {
+       unsigned char b1,b2,b3,b4;
+       EEPROM.get(0, b1);
+       EEPROM.get(1, b2);
+       EEPROM.get(2, b3);
+       EEPROM.get(3, b4);
+
+       // If you can't connect pin12 to GND because you want to use the ISP headers, then see https://amiga.robsmithdev.co.uk/isp
+       if ((b1 == 0x52) && (b2 == 0x6F) && (b3 == 0x62) && (b4 == 0x53)) advancedControllerMode = true;
+    } 
+
+    unsigned char b1,b2;
+    EEPROM.get(4, b1);
+    EEPROM.get(5, b2);
+    drawbridgePlusMode = ((b1 == 0x2B) && (b2 == 0xB2));
+
+    EEPROM.get(6, b1);
+    EEPROM.get(7, b2);
+    disableDensityDetection = (((b1 == 0x44) && (b2 == 0x53)));
+
+    EEPROM.get(8, b1);
+    EEPROM.get(9, b2);
+    slowerDiskSeeking = (((b1 == 0x53) && (b2 == 0x77)));    
+}
+
+// EEPROM access
+void readEpromValue() {
+  writeByteToUART('1');
+  unsigned char index = readByteFromUART();
+  unsigned char value;
+  EEPROM.get(index, value);
+  writeByteToUART(value);
+}
+
+void writeEpromValue() {
+  writeByteToUART('1');
+  unsigned char index = readByteFromUART();
+  unsigned char value = readByteFromUART();
+  EEPROM.put(index, value);
+  writeByteToUART('1');
+
+  // Force settings reload
+  refreshEEPROMSettings();
+}
+
+// Run a diagnostics test command - Updated for Drawbridge Plus
 void runDiagnostic() {
     // See what test to run
     byte test = readByteFromUART();
@@ -334,14 +435,25 @@ void runDiagnostic() {
                bool state1 = false;
                bool state2 = false;
 
-              for (unsigned int b=0; b<20; b++) {
-                 for (unsigned int a=0; a<60000; a++) {
-                      if (PIN_READ_DATA_PORT & PIN_READ_DATA_MASK) state1=true; else state2=true;
-                      if (state1&&state2) break;
-                  }
-
-                  if (state1&&state2) break;
+              if (drawbridgePlusMode) {
+                for (unsigned int b=0; b<20; b++) {
+                   for (unsigned int a=0; a<60000; a++) {
+                        if (PIN_READ_DATA_PLUSMODE_PORT & PIN_READ_DATA_PLUSMODE_MASK) state1=true; else state2=true;
+                        if (state1&&state2) break;
+                    }
+                    if (state1&&state2) break;
+                }
+              } else {
+                for (unsigned int b=0; b<20; b++) {
+                   for (unsigned int a=0; a<60000; a++) {
+                        if (PIN_READ_DATA_PORT & PIN_READ_DATA_MASK) state1=true; else state2=true;
+                        if (state1&&state2) break;
+                    }
+  
+                    if (state1&&state2) break;
+                }
               }
+              
 
               if (state1&&state2) {
                   writeByteToUART('1');
@@ -359,6 +471,37 @@ void runDiagnostic() {
               for (unsigned int value = 0; value<=255; value++) {
                 writeByteToUART(value);
               }        
+          }
+          break;
+
+       case '6':  // help identify drawbridge PLUS
+          {
+              unsigned int stdCounter = 0;
+              unsigned int plusCounter = 0;
+              bool stdLastState = false;
+              bool plusLastState = false;
+              
+              for (unsigned int b=0; b<5; b++) {
+                 for (unsigned int a=0; a<60000; a++) {
+                      bool state = (PIN_READ_DATA_PLUSMODE_PORT & PIN_READ_DATA_PLUSMODE_MASK);
+                      if (state != plusLastState) {
+                        plusLastState = state;
+                        if (plusCounter<0xFFFF) plusCounter++;
+                      }
+                      
+                      state = (PIN_READ_DATA_PORT & PIN_READ_DATA_MASK);
+                      if (state != stdLastState) {
+                        stdLastState = state;
+                        if (stdCounter<0xFFFF) stdCounter++;
+                      }
+                  }
+              }
+
+              if (stdCounter<plusCounter) {
+                  writeByteToUART('1');
+              } else {
+                  writeByteToUART('0');
+              }
           }
           break;
               
@@ -382,14 +525,14 @@ void stopDriveForOperation() {
   smalldelay(1);
 }
 
-// Rewinds the head back to Track 0
+// Rewinds the head back to Track 0 - Updated for Drawbridge Plus
 bool goToTrack0() {
     startDriveForOperation();
     digitalWrite(PIN_MOTOR_DIR,MOTOR_TRACK_DECREASE);   // Set the direction to go backwards
     int counter=0;
-    while (digitalRead(PIN_DETECT_TRACK_0) != LOW) {
-       stepDirectionHead();   // Keep moving the head until we see the TRACK 0 detection pin
-       smalldelay(1);         // slow down a little
+    unsigned char portPin = drawbridgePlusMode ? PIN_READ_DATA : PIN_DETECT_TRACK_0;
+    while (digitalRead(portPin) != LOW) {
+       stepDirectionHead(45);   // Keep moving the head until we see the TRACK 0 detection pin
        counter++;
        // If this happens we;ve steps twice as many as needed and still havent found track 0
        if (counter>170) {
@@ -415,8 +558,7 @@ void handleNoClickSeek() {
   startDriveForOperation();
 
   digitalWrite(PIN_MOTOR_DIR,MOTOR_TRACK_DECREASE);   // Move OUT
-  stepDirectionHead();
-  smalldelay(1);
+  stepDirectionHead(45);
 
   writeByteToUART('1');
 
@@ -432,7 +574,6 @@ void handleNoClickSeek() {
    stopDriveForOperation();
 }
         
-
 // Goto to a specific track.  During testing it was easier for the track number to be supplied as two ASCII characters, so I left it like this
 bool gotoTrackX(bool reportDiskChange) {
     // Read the bytes
@@ -444,8 +585,14 @@ bool gotoTrackX(bool reportDiskChange) {
       flags = readByteFromUART()-'0';      
     }
     
-    // Work so its compatiable with previous versions
-    const unsigned char delayTime = 4 - (flags & 3);
+    // Handle speed of seek
+    unsigned long delayTime;
+    switch (flags & 3) {
+      case 0: delayTime = 30; break;   // very fast
+      case 1: delayTime = 32; break;   // fast
+      case 2: delayTime = 35; break;   // normal
+      case 3: delayTime = 45; break;   // slow
+    }
 
     // Validate
     if ((track1<'0') || (track1>'9')) return false;
@@ -473,15 +620,13 @@ bool gotoTrackX(bool reportDiskChange) {
     if (currentTrack < track) {
         digitalWrite(PIN_MOTOR_DIR,MOTOR_TRACK_INCREASE);   // Move IN
         while (currentTrack < track) {
-            stepDirectionHead();
-            if (delayTime) smalldelay(delayTime);
+            stepDirectionHead(delayTime);
             currentTrack++;         
         }
     } else {
         digitalWrite(PIN_MOTOR_DIR,MOTOR_TRACK_DECREASE);   // Move OUT
         while (currentTrack > track) {
-            stepDirectionHead();
-            if (delayTime) smalldelay(delayTime);
+            stepDirectionHead(delayTime);
             currentTrack--;
         }
     }
@@ -508,7 +653,7 @@ bool gotoTrackX(bool reportDiskChange) {
     return true;
 }
 
-// Checks manually to see if theres a disk on un-modded hardware
+// Checks manually to see if theres a disk on un-modded hardware. - Updated for Drawbridge Plus
 bool nonModCheckForDisk() {
     register unsigned char lastState = PIN_READ_DATA_PORT & PIN_READ_DATA_MASK;
     const unsigned char indexPinStatus = PIN_INDEX_PORT & PIN_INDEX_MASK;
@@ -529,7 +674,7 @@ bool nonModCheckForDisk() {
 
       // Allow this inner loop to run for approx 12ms
       while (TCNT2<=188) {
-        register unsigned char currentState = PIN_READ_DATA_PORT & PIN_READ_DATA_MASK;
+        register unsigned char currentState = drawbridgePlusMode ? (PIN_READ_DATA_PLUSMODE_PORT & PIN_READ_DATA_PLUSMODE_MASK) : (PIN_READ_DATA_PORT & PIN_READ_DATA_MASK);
 
         // See if the index pulse was detected.  
         if ((PIN_INDEX_PORT & PIN_INDEX_MASK) != indexPinStatus) {
@@ -610,23 +755,19 @@ void checkWriteProtectStatus() {
 }
 
 
-#define CHECKSERIAL_ONLY() if (UCSR0A & bit(RXC0)) {                      \
-                            SERIAL_BUFFER[serialWritePos++] = UDR0;     \
-                            serialBytesInUse++;                         \
-                          }   
+// This runs the PWM for writing a single pulse
+#define RUN_PULSE_DD()                                                                               \
+        if ((!nextByteAvailable) && (UCSR0A & bit(RXC0))) {                                          \
+           PIN_CTS_PORT|=PIN_CTS_MASK;                                                               \
+           nextByte = UDR0, nextByteAvailable = true;                                                \
+        }                                                                                            \
+        while (!(TIFR2 &  bit(TOV2))) {};                                                            \
+        OCR2A = counter;    /* reset to zero when we get to counter */                               \
+        OCR2B = pulseStart;                                                                          \
+        TIFR2 |= bit(TOV2);        
 
-// 14 is the minimum number here.  Any less than this and the CHECKSERIAL_ONLY() code will impact the output.  The pulse width doesn't matter as long as its at least 0.125uSec (its the falling edge that triggers a bit write)   
-// Because only the falling edge is important we achieve precomp by shifting the pulse starting position back or forward two clock ticks      
-// Because it may go back 2 ticks, we increase this number here by 2.  12 ticks is 750 ns, 14 ticks is 875 ns and 16 is 1000ns (1us) 
-// By doing this, the bit cell timing remains constant, but the actual write position is shifted +/- 125ns as required
-#define PULSE_WIDTH 14
-// This is where the above starts from the end of the timer
-#define PULSE_WIDTH_VALUE (0xFF - (PULSE_WIDTH-1))
-// This is where to start the counter from compensating for code delay of 6 ticks (measured) 
-#define PULSE_BREAK (58-PULSE_WIDTH) 
-
-// This makes use of the PWM output to create the wayforms for us as accurate as possible.
-void writePrecompTrack() {   
+// Write a track to disk from the UART - This works like the precomp version as the old method isn't fast enough.  This version is 100% jitter free
+void writePrecompTrack() {
     // Check if its write protected.  You can only do this after the write gate has been pulled low
     if (digitalRead(PIN_WRITE_PROTECTED) == LOW) {
         writeByteToUART('N'); 
@@ -634,125 +775,72 @@ void writePrecompTrack() {
     } else
     writeByteToUART('Y');
 
-    // Find out how many bytes they want to send
     unsigned char highByte = readByteFromUART();
     unsigned char lowByte = readByteFromUART();
     unsigned char waitForIndex = readByteFromUART();
-    
     unsigned short numBytes = (((unsigned short)highByte)<<8) | lowByte;
-
-    // Setup buffer parameters
-    unsigned char serialReadPos = 0;
-    unsigned char serialWritePos = SERIAL_BUFFER_START;
-    unsigned char serialBytesInUse = SERIAL_BUFFER_START;
+    
     digitalWrite(PIN_ACTIVITY_LED,HIGH);
     
     writeByteToUART('!');     
-    
+
+    numBytes--;
+
+    register unsigned char currentByte = readByteFromUART();
+    register unsigned char nextByte = 0;
+    register bool nextByteAvailable = false;
+
     PIN_CTS_PORT|=PIN_CTS_MASK;                // stop any more data coming in!
- 
-    // Signal we're ready for data
-    PIN_CTS_PORT &= (~PIN_CTS_MASK);   
 
-    // Fill our buffer to give us a head start
-    for (unsigned char a=0; a<SERIAL_BUFFER_START; a++) {
-        // Wait for it
-        while (!( UCSR0A & ( bit(RXC0)))) {}; 
-        // Save the byte
-        SERIAL_BUFFER[a] = UDR0;
-    }
-
-    // Block more data
-    PIN_CTS_PORT|=PIN_CTS_MASK;  
-    
-    // Enable writing
-    PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
-
-    // Reset the counter, ready for writing - abuse the Fast PWM to produce the wayforms we need
-    TCCR2A = bit(COM2B1) | bit(WGM20) | bit(WGM21)| bit(WGM22);  // (COM2B0|COM2B1) Clear OC2B. on compare match, set OC2B at BOTTOM.  WGM20|WGM21|WGM22 is Fast PWM. 
+    // Reset the counter, ready for writing - abuse the Fast PWM to produce the wayforms we need.  All we do is change the value it resets at!
+    TCCR2A = bit(COM2B1) | bit(WGM20) | bit(WGM21);  // (COM2B0|COM2B1) Clear OC2B. on compare match, set OC2B at BOTTOM.  WGM20|WGM21 is Fast PWM. 
     TCCR2B = bit(WGM22)| bit(CS20);         // WGM22 enables waveform generation.  CS20 starts the counter runing at maximum speed
 
+    // Enable writing
+    PIN_WRITE_DATA_PORT|=PIN_WRITE_DATA_MASK;
+    
     // While the INDEX pin is high wait.  Might as well write from the start of the track
     if (waitForIndex) 
         while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
 
+    PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
+
     // Get it ready    
-    OCR2A = 0;                         // Because we're using the PWM limits backwards this causes it to get stuck when it reaches 0
-    OCR2B = PULSE_WIDTH_VALUE;         // pulse width is set to default
-    TCNT2 = PULSE_WIDTH_VALUE-96;      // trigger it to start. This will just sent a 0001 to start with
-    TIFR2 |= bit(OCF2B);
-    TIFR2 |= bit(TOV2);
+    OCR2A = 64;      // Just setup something to get this going        
+    OCR2B = 62;         
+    TCNT2 = 0;      
+    TIFR2 |= bit(TOV2) | bit(OCF2B);
 
     // Loop through all bytes of data required.  Each byte contains two sequences to write
-    while (--numBytes>0) {
-        if (!serialBytesInUse) break;
+    do {
+        // Group 1
+        register unsigned char counter = 63 + ((currentByte&0x03) * 32);
+        register unsigned char pulseStart = counter - 5;
+        if (currentByte & 0x04) pulseStart-=2;    // Pulse should be early, so just move the pulse start back
+        if (currentByte & 0x08) pulseStart+=2;    // Pulse should be late, so move the pulse start forward
+        
+        PIN_CTS_PORT &= (~PIN_CTS_MASK);
+        RUN_PULSE_DD();
 
-        // Read a byte from the buffer
-        register unsigned char currentByte = SERIAL_BUFFER[serialReadPos++];
-        serialBytesInUse--;
-        register unsigned char counter = PULSE_WIDTH_VALUE - (PULSE_BREAK + ( (currentByte&0x03)    *32));
-        register unsigned char pulseStart = PULSE_WIDTH_VALUE;
-        if (currentByte & 0x04) pulseStart=PULSE_WIDTH_VALUE-2;    // Pulse should be early, so just move the pulse start back
-        if (currentByte & 0x08) pulseStart=PULSE_WIDTH_VALUE+2;    // Pulse should be late, so move the pulse start forward
-
-        // Hardware error checks (frame error and overrun)
+        numBytes--;
+        // Check for overflow errors
         if (UCSR0A & (bit(FE0)|bit(DOR0))) break;
 
-        // Run until the pulse starts.  The pulse start is also timed so that its width is enough to cover the time to execute CHECKSERIAL_ONLY()
-        while (!(TIFR2 &  bit(OCF2B))) {
-            CHECKSERIAL_ONLY();
-        }; 
+        // Group 2
+        counter = 63 + ((currentByte&0x30) * 2);
+        pulseStart = counter - 5;
+        if (currentByte & 0x40) pulseStart-=2;    // Pulse should be early, so just move the pulse start back
+        if (currentByte & 0x80) pulseStart+=2;    // Pulse should be late, so move the pulse start forward
+        RUN_PULSE_DD();
 
-        // Wait for overflow (ie: pulse finishes)
-        while (!(TIFR2 &  bit(TOV2)));
-        // Set the new counter and clear all the overflows
-        TCNT2 = counter;
-        OCR2B = pulseStart;
-        
-        // Clear overflow flags
-        TIFR2 |= bit(TOV2);
-        TIFR2 |= bit(OCF2B);
-        
-        // Control I/O with the serial port
-        if (serialBytesInUse<SERIAL_BUFFER_START) PIN_CTS_PORT &= (~PIN_CTS_MASK); else PIN_CTS_PORT|=PIN_CTS_MASK;  
-        
-        // Work out the next entry
-        counter = PULSE_WIDTH_VALUE - (PULSE_BREAK + ( (currentByte&0x30) * 2));
-        pulseStart = PULSE_WIDTH_VALUE;
-        if (currentByte & 0x40) pulseStart=PULSE_WIDTH_VALUE-2;    // Pulse should be early, so just move the pulse start back
-        if (currentByte & 0x80) pulseStart=PULSE_WIDTH_VALUE+2;    // Pulse should be late, so move the pulse start forward
+        if (!nextByteAvailable) break;
+        currentByte = nextByte;
+        nextByteAvailable = false;
+    } while (numBytes);    
 
-        // Hardware error checks (frame error and overrun)
-        if (UCSR0A & (bit(FE0)|bit(DOR0))) break;
-        
-        // Run until the pulse starts.  The pulse start is also timed so that its width is enough to cover the time to execute CHECKSERIAL_ONLY()
-        while (!(TIFR2 &  bit(OCF2B))) {
-            CHECKSERIAL_ONLY();
-        }; 
-           
-        // Wait for overflow (ie: pulse finishes)
-        while (!(TIFR2 &  bit(TOV2)));
-        // Set the new counter and clear all the overflows
-        TCNT2 = counter;
-        OCR2B = pulseStart;
-        
-        // Clear overflow flags
-        TIFR2 |= bit(TOV2);
-        TIFR2 |= bit(OCF2B);
-    }  
-    
-    // Wait for the pulse to finish
-    while (!(TIFR2 &  bit(OCF2B)));
-    while (!(TIFR2 &  bit(TOV2)));
-
-    // Blank NOPS
-    asm volatile("nop\n\t"::);
-    asm volatile("nop\n\t"::);
-    asm volatile("nop\n\t"::);
-    asm volatile("nop\n\t"::);
-
-    // Turn off the write head
     PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;
+    // Turn off the write head
+    PIN_WRITE_DATA_PORT|=PIN_WRITE_DATA_MASK;
 
     TCCR2A = 0;              // disable and reset everything
     TCCR2B = 0;              // Stop timer 2     
@@ -773,18 +861,25 @@ void writePrecompTrack() {
     }
 
     digitalWrite(PIN_ACTIVITY_LED,LOW);
-    PIN_CTS_PORT &= (~PIN_CTS_MASK);
+    PIN_CTS_PORT &= (~PIN_CTS_MASK);     
 }
 
 
-#define CHECK_SERIAL()          if (UCSR0A & ( 1 << RXC0 )) {                      \
+
+// 256 byte circular buffer - don't change this, we abuse the unsigned char to overflow back to zero!
+#define SERIAL_BUFFER_SIZE 256
+#define SERIAL_BUFFER_START (SERIAL_BUFFER_SIZE - 16)
+
+#define CHECK_SERIAL_PART1()    if (UCSR0A & ( 1 << RXC0 )) {                \
                                     SERIAL_BUFFER[serialWritePos++] = UDR0;        \
                                     serialBytesInUse++;                            \
-                                }                                                  \   
-                                if (serialBytesInUse<SERIAL_BUFFER_START)          \
+                                }                                                  
+
+#define CHECK_SERIAL_PART2()    if (serialBytesInUse<SERIAL_BUFFER_START)          \
                                     PIN_CTS_PORT &= (~PIN_CTS_MASK);               \
-                                else PIN_CTS_PORT|=PIN_CTS_MASK;                   
-                                
+                                else PIN_CTS_PORT|=PIN_CTS_MASK;                        
+
+#define CHECK_SERIAL()        CHECK_SERIAL_PART1(); CHECK_SERIAL_PART2();                                                
  
 // Small Macro to write a '1' pulse to the drive if a bit is set based on the supplied bitmask
 #define WRITE_BIT(value,bitmask) if (currentByte & bitmask) {                            \
@@ -795,8 +890,10 @@ void writePrecompTrack() {
                                      PIN_WRITE_DATA_PORT|=PIN_WRITE_DATA_MASK;           \
                                  }                                                       
  
-// Write a track to disk from the UART - the data should be pre-MFM encoded raw track data where '1's are the pulses/phase reversals to trigger
+// Write a track to disk from the UART - the data should be pre-MFM encoded raw track data where '1's are the pulses/phase reversals to trigger - this is old, should use the PRECOMP version now for better quality
 void writeTrackFromUART() {
+    // Only used here
+    unsigned char SERIAL_BUFFER[SERIAL_BUFFER_SIZE];
     // Configure timer 2 just as a counter in NORMAL mode
     TCCR2A = 0 ;              // No physical output port pins and normal operation
     TCCR2B = bit(CS20);       // Precale = 1  
@@ -842,11 +939,12 @@ void writeTrackFromUART() {
     unsigned char serialBytesInUse = SERIAL_BUFFER_START;
     digitalWrite(PIN_ACTIVITY_LED,HIGH);
     // Enable writing
-    PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
+    PIN_WRITE_DATA_PORT|=PIN_WRITE_DATA_MASK;
 
     // While the INDEX pin is high wait.  Might as well write from the start of the track
     if (waitForIndex) 
         while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
+    PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
 
     // Reset the counter, ready for writing
     TCNT2=0;  
@@ -902,8 +1000,8 @@ void writeTrackFromUART() {
     }  
   
     // Turn off the write head
+    PIN_WRITE_DATA_PORT|=PIN_WRITE_DATA_MASK;
     PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;
-
     // Done!
     writeByteToUART('1');
     digitalWrite(PIN_ACTIVITY_LED,LOW);
@@ -914,115 +1012,112 @@ void writeTrackFromUART() {
     TCCR2B = 0;   // No Clock (turn off)    
 }
 
-// Write a track to disk from the UART - the data should be pre-MFM encoded raw track data where '1's are the pulses/phase reversals to trigger
-// THIS CODE IS UNTESTED
+// This runs the PWM for writing a single pulse
+#define RUN_PULSE()                                                                                  \
+        if ((!nextByteAvailable) && (UCSR0A & bit(RXC0))) {                                          \
+           PIN_CTS_PORT|=PIN_CTS_MASK;                                                               \
+           nextByte = UDR0, nextByteAvailable = true;                                                \
+        }                                                                                            \
+        while (!(TIFR2 &  bit(TOV2)));                                                               \
+        OCR2A = counter;    /* reset to zero when we get to counter */                               \
+        OCR2B = counter-2;                                                                           \
+        TIFR2 |= bit(TOV2);        
+
+// Write a track to disk from the UART - the data should be pre-MFM encoded raw track data where '1's are the pulses/phase reversals to trigger  - This works like the precomp version as the old method isn;t fast enough
+// This is 100% jitter free!
 void writeTrackFromUART_HD() {
-    // Configure timer 2 just as a counter in NORMAL mode
-    TCCR2A = 0 ;              // No physical output port pins and normal operation
-    TCCR2B = bit(CS20);       // Precale = 1  
-    OCR2A = 0x00;
-    OCR2B = 0x00;
-    
     // Check if its write protected.  You can only do this after the write gate has been pulled low
     if (digitalRead(PIN_WRITE_PROTECTED) == LOW) {
         writeByteToUART('N'); 
         return;
-    } else writeByteToUART('Y');
+    } else
+    writeByteToUART('Y');
 
-    // Find out how many bytes they want to send
-    unsigned char highByte = readByteFromUART();
-    unsigned char lowByte = readByteFromUART();
     unsigned char waitForIndex = readByteFromUART();
-    PIN_CTS_PORT|=PIN_CTS_MASK;                // stop any more data coming in!
     
-    unsigned short numBytes = (((unsigned short)highByte)<<8) | lowByte;
-
-    writeByteToUART('!');
-    
-    register unsigned char currentByte;
-
-    // Signal we're ready for another byte to come
-    PIN_CTS_PORT &= (~PIN_CTS_MASK);   
-
-    // Fill our buffer to give us a head start
-    for (int a=0; a<SERIAL_BUFFER_START; a++) {
-        // Wait for it
-        while (!( UCSR0A & ( 1 << RXC0 ))){}; 
-        // Save the byte
-        SERIAL_BUFFER[a] = UDR0;
-    }
-
-    // Stop more bytes coming in, although we expect one more
-    PIN_CTS_PORT|=PIN_CTS_MASK; 
-
-    // Setup buffer parameters
-    unsigned char serialReadPos = 0;
-    unsigned char serialWritePos = SERIAL_BUFFER_START;
-    unsigned char serialBytesInUse = SERIAL_BUFFER_START;
     digitalWrite(PIN_ACTIVITY_LED,HIGH);
-   
+    
+    writeByteToUART('!');     
+
+    register unsigned char currentByte = readByteFromUART();
+    register unsigned char nextByte = 0;
+    register bool nextByteAvailable = false;
+
+    PIN_CTS_PORT|=PIN_CTS_MASK;                // stop any more data coming in!
+
+    // Reset the counter, ready for writing - abuse the Fast PWM to produce the wayforms we need.  All we do is change the value it resets at!
+    TCCR2A = bit(COM2B1) | bit(WGM20) | bit(WGM21);  // (COM2B0|COM2B1) Clear OC2B. on compare match, set OC2B at BOTTOM.  WGM20|WGM21 is Fast PWM. 
+    TCCR2B = bit(WGM22)| bit(CS20);         // WGM22 enables waveform generation.  CS20 starts the counter runing at maximum speed
+
     // Enable writing
-    PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
+    PIN_WRITE_DATA_PORT|=PIN_WRITE_DATA_MASK;
     
     // While the INDEX pin is high wait.  Might as well write from the start of the track
     if (waitForIndex) 
         while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
 
-    // Reset the counter, ready for writing
-    TCNT2=0;  
-    
-    // Loop them bytes - ideally I wanted to use an ISR here, but theres just too much overhead even with naked ISRs to do this (with preserving registers etc)
-    for (register unsigned int a=0; a<numBytes; a++) {
-        // Should never happen, but we'll wait here if theres no data 
-        if (serialBytesInUse<1) {
-            // This can;t happen and causes a write failure
-            digitalWrite(PIN_ACTIVITY_LED,LOW);
-            writeByteToUART('X');   // Thus means buffer underflow. PC wasn't sending us data fast enough
-            PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;
-            TCCR2B = 0;   // No Clock (turn off)                
-            return;
-        }
+    PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
 
-        // Read a buye from the buffer
-        currentByte = SERIAL_BUFFER[serialReadPos++]; 
-        serialBytesInUse--;
+    // Get it ready    
+    OCR2A = 32;      // Just setup something to get this going        
+    OCR2B = 30;         
+    TCNT2 = 0;      
+    TIFR2 |= bit(TOV2);
 
-        
-        // Theres a small possibility, looking at the decompiled ASM (and less likely even with these few extra instructions) we actually might get back here before the TCNT2 overflows back to zero causing this to write early
-        while (TCNT2>=248) {}
-    
-        // Now we write the data.  Hopefully by the time we get back to the top everything is ready again
-        WRITE_BIT(0x08,B10000000);
-        CHECK_SERIAL();
-        WRITE_BIT(0x18,B01000000);
-        CHECK_SERIAL();
-        WRITE_BIT(0x28,B00100000);
-        CHECK_SERIAL();
-        WRITE_BIT(0x38,B00010000);
-        CHECK_SERIAL();
-        WRITE_BIT(0x48,B00001000);
-        CHECK_SERIAL();
-        WRITE_BIT(0x58,B00000100);
-        CHECK_SERIAL();
-        WRITE_BIT(0x68,B00000010);
-        CHECK_SERIAL();
-        WRITE_BIT(0x78,B00000001);        
-        TCNT2=248;   // a little cheating, but *should* work
-        PIN_CTS_PORT|=PIN_CTS_MASK;   // Stop data coming in while we're not monitoring it
-    }  
-  
-    // Turn off the write head
+    // Loop through all bytes of data required.  Each byte contains two sequences to write
+    do {
+        // Group 1
+        register unsigned char counter = 15 + (currentByte&B00110000);
+        PIN_CTS_PORT &= (~PIN_CTS_MASK);
+        RUN_PULSE();
+                
+        // Group 2
+        counter = 15 + ((currentByte&B00001100)*4);
+        RUN_PULSE();
+
+        // Group 3
+        counter = 15 + ((currentByte&B00000011) * 16);
+        RUN_PULSE();
+
+        // Check for overflows
+        if (UCSR0A & (bit(FE0)|bit(DOR0))) break;
+
+        // Group 4
+        counter = 15 + ((currentByte&B11000000)/4);
+        RUN_PULSE();
+
+        if (!nextByteAvailable) break;
+        currentByte = nextByte;
+        nextByteAvailable = false;
+    } while (currentByte);    
+
     PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;
+    // Turn off the write head
+    PIN_WRITE_DATA_PORT|=PIN_WRITE_DATA_MASK;
 
-    // Done!
-    writeByteToUART('1');
+    TCCR2A = 0;              // disable and reset everything
+    TCCR2B = 0;              // Stop timer 2     
+
+    // Data wouldnt have been read quick enough
+    if (currentByte) {
+        if (UCSR0A & bit(FE0)) {
+           writeByteToUART('Y');   // Serial Framing Error
+        } else
+        if (UCSR0A & bit(DOR0)) {
+            writeByteToUART('Z');   // Serial IO overrun
+        } else {
+            writeByteToUART('X');   // Serial data not received quickly enough
+        }
+    } else {
+      // Done!
+      writeByteToUART('1');      
+    }
+
     digitalWrite(PIN_ACTIVITY_LED,LOW);
-    
-    TCCR2B = 0;   // No Clock (turn off)    
+    PIN_CTS_PORT &= (~PIN_CTS_MASK);     
 }
 
-
-// Write blank data to a disk so that no MFM track could be detected - this is no longer used
+// Write blank data to a disk so that no MFM track could be detected 
 void eraseTrack() {    
     // Check if its write protected.  You can only do this after the write gate has been pulled low
     if (digitalRead(PIN_WRITE_PROTECTED) == LOW) {
@@ -1036,7 +1131,7 @@ void eraseTrack() {
     PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
 
     // To write the 01010101 sequence we're going to ask the Arduino to generate this from its PWM output.
-    TCCR2A = bit(COM2B1) | bit(WGM20) | bit(WGM21)| bit(WGM22);  // (COM2B0|COM2B1) Clear OC2B. on compare match, set OC2B at BOTTOM.  WGM20|WGM21|WGM22 is Fast PWM. 
+    TCCR2A = bit(COM2B1) | bit(WGM20) | bit(WGM21);  // (COM2B0|COM2B1) Clear OC2B. on compare match, set OC2B at BOTTOM.  WGM20|WGM21 is Fast PWM. 
     TCCR2B = bit(WGM22)| bit(CS20);         // WGM22 enables waveform generation.  CS20 starts the counter runing at maximum speed
     // This generates a square wave, 3usec high, and 1usec low, 4uSec in total
     OCR2A = 63;                         
@@ -1064,7 +1159,7 @@ void eraseTrack() {
     digitalWrite(PIN_ACTIVITY_LED,LOW);
 }
 
-// Write blank data to a disk so that no MFM track could be detected - this is no longer used
+// Write blank data to a disk so that no MFM track could be detected
 void eraseTrack_HD() {
     // Check if its write protected.  You can only do this after the write gate has been pulled low
     if (digitalRead(PIN_WRITE_PROTECTED) == LOW) {
@@ -1078,20 +1173,20 @@ void eraseTrack_HD() {
     PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
 
     // To write the 01010101 sequence we're going to ask the Arduino to generate this from its PWM output.
-    TCCR2A = bit(COM2B1) | bit(WGM20) | bit(WGM21)| bit(WGM22);  // (COM2B0|COM2B1) Clear OC2B. on compare match, set OC2B at BOTTOM.  WGM20|WGM21|WGM22 is Fast PWM. 
+    TCCR2A = bit(COM2B1) | bit(WGM20) | bit(WGM21);  // (COM2B0|COM2B1) Clear OC2B. on compare match, set OC2B at BOTTOM.  WGM20|WGM21 is Fast PWM. 
     TCCR2B = bit(WGM22)| bit(CS20);         // WGM22 enables waveform generation.  CS20 starts the counter runing at maximum speed
-    // This generates a square wave, 1.5usec high, and 0.1usec low, 4uSec in total
+    // This generates a square wave, 1.5usec high, and 0.5usec low, 2uSec in total
     OCR2A = 31;                         
-    OCR2B = 15;                         
+    OCR2B = 23;         
     TCNT2=0;  
 
     // Now just count how many times this happens.  Approx 200ms is a revolution, so we'll go 200ms + 5% to be on the safe side (210ms)
     TIFR2 |= bit(TOV2);
 
-    // 52500 is 210 / 0.004, but we're tqice as quick, so do the loop twice
+    // This si the same as the DD version, except we do it twice as the HD version is twice as fast
     for (unsigned char loops=0; loops<2; loops++) 
       for (unsigned int counter=0; counter<52500; counter++) {
-        // Every time this loop completes, 4us have passed.
+        // Every time this loop completes, 2us have passed.
         while (!(TIFR2 & bit(TOV2))) {};
         TIFR2 |= bit(TOV2);        
       };
@@ -1105,129 +1200,6 @@ void eraseTrack_HD() {
     // Done!
     writeByteToUART('1');
     digitalWrite(PIN_ACTIVITY_LED,LOW);  
-}
-
-// Read the track using a timings to calculate which MFM sequence has been triggered
-void readTrackDataFast() {
-    // Configure timer 2 just as a counter in NORMAL mode
-    TCCR2A = 0 ;              // No physical output port pins and normal operation
-    TCCR2B = bit(CS20);       // Precale = 1  
-    OCR2A = 0x00;
-    OCR2B = 0x00;
-    // First wait for the serial port to be available
-    while(!(UCSR0A & (1<<UDRE0)));   
-   
-    // Signal we're active
-    digitalWrite(PIN_ACTIVITY_LED,HIGH);
-
-    // Force data to be stored in a register
-    register unsigned char DataOutputByte = 0;
-
-    // While the INDEX pin is high wait if the other end requires us to
-    if (readByteFromUART())
-        while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
-
-    TCNT2=0;       // Reset the counter
-
-    register unsigned char counter;
-    long totalBits=0;
-    long target = ((long)RAW_TRACKDATA_LENGTH)*(long)8;
-    while (totalBits<target) {
-        for (register unsigned char bits=0; bits<4; bits++) {
-            // Wait while pin is high
-            
-            while (PIN_READ_DATA_PORT & PIN_READ_DATA_MASK) {
-            };
-            counter = TCNT2, TCNT2 = 0;  // reset - must be done with a COMMA
-           
-            DataOutputByte<<=2;   
-
-            // DO NOT USE BRACES HERE, use the "," or the optomiser messes it up.  Numbers changed as these are best centered around where the bitcels actually are
-            if (counter<TIMING_DD_UPPER_4us) DataOutputByte|=B00000001,totalBits+=2; else    // this accounts for just a '1' or a '01' as two '1' arent allowed in a row
-            if (counter<TIMING_DD_UPPER_6us) DataOutputByte|=B00000010,totalBits+=3; else            
-            if (counter<TIMING_DD_UPPER_8us) DataOutputByte|=B00000011,totalBits+=4; else      
-                             totalBits+=5;   // this is treated as an 00001, which isnt allowed, but does work
-            
-            // Wait until pin is high again
-            while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};
-        }
-        if (!DataOutputByte) {
-          // sending 0 here is wrong and will cause the PC side to get confused.  so we set one ot be a 8us rather than the fake 10
-          DataOutputByte = B00000011; 
-          totalBits--;  // account for one less bit
-        }
-        UDR0 = DataOutputByte;
-    }
-    // Because of the above rules the actual valid two-bit sequences output are 01, 10 and 11, so we use 00 to say "END OF DATA"
-    writeByteToUART(0);
-
-    // turn off the status LED
-    digitalWrite(PIN_ACTIVITY_LED,LOW);
-
-    // Disable the counter
-    TCCR2B = 0;      // No Clock (turn off)    
-}
-
-// Read the track for a HD disk
-void readTrackDataFast_HD() {
-    // Configure timer 2 just as a counter in NORMAL mode
-    TCCR2A = 0 ;              // No physical output port pins and normal operation
-    TCCR2B = bit(CS20);       // Precale = 1  
-    OCR2A = 0x00;
-    OCR2B = 0x00;
-    // First wait for the serial port to be available
-    while(!(UCSR0A & (1<<UDRE0)));   
-   
-    // Signal we're active
-    digitalWrite(PIN_ACTIVITY_LED,HIGH);
-
-    // Force data to be stored in a register
-    register unsigned char DataOutputByte = 0;
-
-    // While the INDEX pin is high wait if the other end requires us to
-    if (readByteFromUART())
-        while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
-
-    TCNT2=0;       // Reset the counter
-
-    register unsigned char counter;
-    long totalBits=0;
-    long target = ((long)RAW_HD_TRACKDATA_LENGTH)*(long)8;
-
-    while (totalBits<target) {
-        for (register unsigned char bits=0; bits<4; bits++) {
-            // Wait while pin is high
-            
-            while (PIN_READ_DATA_PORT & PIN_READ_DATA_MASK) {
-            };
-            counter = TCNT2, TCNT2 = 0;  // reset - must be done with a COMMA
-           
-            DataOutputByte<<=2;   
-            
-            // DO NOT USE BRACES HERE, use the "," or the optomiser messes it up
-             if (counter<TIMING_HD_UPPER_2us) DataOutputByte|=B00000001,totalBits+=2; else    // this accounts for just a '1' or a '01' as two '1' arent allowed in a row
-            if (counter<TIMING_HD_UPPER_4us) DataOutputByte|=B00000010,totalBits+=3; else            
-            if (counter<TIMING_HD_UPPER_6us) DataOutputByte|=B00000011,totalBits+=4; else      
-                             totalBits+=5;   // this is treated as an 00001, which isnt allowed, but does work
-                        
-            // Wait until pin is high again
-            while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};
-        }
-        if (!DataOutputByte) {
-          // sending 0 here is wrong and will cause the PC side to get confused.  so we set one ot be a 8us rather than the fake 10
-          DataOutputByte = B00000011; 
-          totalBits--;  // account for one less bit
-        }
-        UDR0 = DataOutputByte;
-    }
-    // Because of the above rules the actual valid two-bit sequences output are 01, 10 and 11, so we use 00 to say "END OF DATA"
-    writeByteToUART(0);
-
-    // turn off the status LED
-    digitalWrite(PIN_ACTIVITY_LED,LOW);
-
-    // Disable the counter
-    TCCR2B = 0;      // No Clock (turn off)    
 }
 
 // Nasty string sending function
@@ -1264,71 +1236,98 @@ void sendTickAsuSec(unsigned int i) {
   writeByteToUART('0' + (i/1)%10);
 }
 
-// Drive disk statictcs (used to check #define at the top fo the code)
+// Drive disk statistics (used to check #define at the top fo the code) - Updated for Drawbridge Plus
 void measureCurrentDisk() {
   sendString("\n\nDrive Counters.  Current Parameters:\n");
-  sendString("Timing Compensation Overhead in Ticks: ");
-  if (TIMING_OVERHEAD<0) {
-    writeByteToUART('-');
-    sendInt(-TIMING_OVERHEAD);
-  } else sendInt(TIMING_OVERHEAD);
+  int offsetIgnore = 0;
+  
+  if (drawbridgePlusMode) {
+      offsetIgnore = -TIMING_OVERHEAD; // PLUS mode doesnt use this value
+      sendString("DrawBridge Plus Mode\n"); 
+  } else {
+    sendString("Timing Compensation Overhead in Ticks: ");
+    if (TIMING_OVERHEAD<0) {
+      writeByteToUART('-');
+      sendInt(-TIMING_OVERHEAD);
+    } else sendInt(TIMING_OVERHEAD);
+  }
   sendString("\nTicks for middle 4, 6 and 8 uS: ");
-  sendInt(TIMING_DD_MIDDLE_4us); sendString(", "); sendInt(TIMING_DD_MIDDLE_6us); sendString(", "); sendInt(TIMING_DD_MIDDLE_8us); sendString("\n");
+  sendInt(TIMING_DD_MIDDLE_4us+offsetIgnore); sendString(", "); sendInt(TIMING_DD_MIDDLE_6us+offsetIgnore); sendString(", "); sendInt(TIMING_DD_MIDDLE_8us+offsetIgnore); sendString("\n");
   sendString("Ticks for Upper bound for 4, 6 and 8 uS: ");
-  sendInt(TIMING_DD_UPPER_4us); sendString(", "); sendInt(TIMING_DD_UPPER_6us); sendString(", "); sendInt(TIMING_DD_UPPER_8us); sendString("\n");
+  sendInt(TIMING_DD_UPPER_4us+offsetIgnore); sendString(", "); sendInt(TIMING_DD_UPPER_6us+offsetIgnore); sendString(", "); sendInt(TIMING_DD_UPPER_8us+offsetIgnore); sendString("\n");
+  sendString("Ticks for HD Upper bound for 2, 3 uS: ");
+  sendInt(TIMING_HD_UPPER_2us+offsetIgnore); sendString(", "); sendInt(TIMING_HD_UPPER_3us+offsetIgnore); sendString(", "); sendString("\n");
   sendString("\nBitcell timings for current track/side/disk: Testing...");
   
-    TCCR2A = 0 ;              // No physical output port pins and normal operation
-    TCCR2B = bit(CS20);       // Precale = 1 (ie: no prescale)
-    EICRA = bit(ISC01);       // falling edge of INT0 generates an interrupt, they are turned off, but its an easy way for us to detect a falling edge rather than monitoring a pin
     unsigned int cc[256];
     for (int a=0; a<256; a++) cc[a] = 0;
 
+    TCCR2A = 0 ;              // No physical output port pins and normal operation
+    TCCR2B = bit(CS20);       // Precale = 1 (ie: no prescale)
+    EICRA = bit(ISC01);       // falling edge of INT0 generates an interrupt, they are turned off, but its an easy way for us to detect a falling edge rather than monitoring a pin
     // Wait for index pin
     while (!(EIFR&bit(INTF0))) {};
     EIFR=bit(INTF0);  // clear the register saying it detected an index pulse
 
     // Skip the first bit.  We're probably already half way through timing it
-    while (PIN_READ_DATA_PORT & PIN_READ_DATA_MASK) {};
-    TCNT2 = 0;  // reset
-    while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};
+    if (drawbridgePlusMode) {
+      TCCR1A = 0;
+      TCCR1B = bit(CS10); // Capture from pin 8, falling edge. falling edge input capture, prescaler 1, no output compare
+      TCCR1C = 0;
 
-    
-
-    for (int a=0; a<2; a++) {
-      EIFR=bit(INTF0);  // clear the register saying it detected an index pulse
+      while (PIN_READ_DATA_PLUSMODE_PORT & PIN_READ_DATA_PLUSMODE_MASK) {};
+      while (!(PIN_READ_DATA_PLUSMODE_PORT & PIN_READ_DATA_PLUSMODE_MASK)) {};   
+      unsigned char lastCounter = ICR1L;
+      TIFR1 = bit(ICF1);
       
-      while (!(EIFR&bit(INTF0))) {
-         register unsigned char counter;
-         while (PIN_READ_DATA_PORT & PIN_READ_DATA_MASK) { };                                                                                    
-         counter = TCNT2, TCNT2 = 0;
-         if (cc[counter]<65535) cc[counter]++;
-         while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};
-     }
+      for (int a=0; a<2; a++) {
+        EIFR=bit(INTF0);  // clear the register saying it detected an index pulse
+        
+        while (!(EIFR&bit(INTF0))) {
+
+           // Wait for capture or overflow
+           while ((!(TIFR1 & bit(ICF1)))&&(!(TIFR2 & bit(OCF2B)))) {};
+
+           // Was it a capture?
+           if ((TIFR1 & bit(ICF1))) {
+             // Grab the value, caluclate the change, and store the new value
+             const unsigned char tmp = ICR1L;
+             unsigned char output = ICR1L-lastCounter; 
+             TIFR1 = bit(ICF1);   // Reset the cvapture flag
+             lastCounter = tmp;
+             
+             if (cc[output]<65535) cc[output]++;
+             TCNT2 = 0;   // Reset the overflow counter
+            
+           } else TIFR2 = bit(TOV2);
+           
+        }
+      } 
+      TCCR1B = 0;
+    } else {
+      while (PIN_READ_DATA_PORT & PIN_READ_DATA_MASK) {};
+      TCNT2 = 0;  // reset
+      while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};   
+
+      for (int a=0; a<2; a++) {
+        EIFR=bit(INTF0);  // clear the register saying it detected an index pulse
+        
+        while (!(EIFR&bit(INTF0))) {
+           register unsigned char counter;
+           while (PIN_READ_DATA_PORT & PIN_READ_DATA_MASK) { };                                                                                    
+           counter = TCNT2, TCNT2 = 0;
+           if (cc[counter]<65535) cc[counter]++;
+           while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) { };                
+        }
+      } 
     }
+    TCCR2B=0;
 
     sendString(".Completed 2 revolutions.\n\n");
     sendString("Ticks,   uSec, Count, Identified as\n"); 
 
-    int lastWindow = 0;
     
-    for (int a=1; a<=255; a++) {
-      if ((a>=TIMING_DD_UPPER_4us/2) && (lastWindow==0)) {
-        lastWindow = 1;
-        sendString("\n");
-      }
-      if ((a>=TIMING_DD_UPPER_4us) && (lastWindow==1)) {
-        lastWindow = 2;
-        sendString("\n");
-      }
-      if ((a>=TIMING_DD_UPPER_6us) && (lastWindow==2)) {
-        lastWindow = 3;
-        sendString("\n");
-      }
-      if ((a>=TIMING_DD_UPPER_8us) && (lastWindow==3)) {
-        lastWindow = 4;
-        sendString("\n");
-      }
+    for (int a=1; a<=255; a++) {      
       if (cc[a]>1) {
         sendInt(a);
         sendString(", ");
@@ -1337,17 +1336,20 @@ void measureCurrentDisk() {
         sendInt(cc[a]);
         sendString(", ");
 
-        if (a <= TIMING_DD_UPPER_2us) {
-              sendString("4us, (assumed) but bad");
-        } else
-        if (a<TIMING_DD_UPPER_4us) {
-              sendString("4us");
+        if (a<TIMING_HD_UPPER_2us+offsetIgnore) {
+              sendString("2us (HD)");
         } else                                                                                
-        if (a<TIMING_DD_UPPER_6us) {                                                    
-              sendString("6us");
+        if (a<TIMING_HD_UPPER_3us+offsetIgnore) {                                                    
+              sendString("3us (HD)");
         } else                                                                                
-        if (a<TIMING_DD_UPPER_8us) {                                                    
-              sendString("8us");
+        if (a<TIMING_DD_UPPER_4us+offsetIgnore) {
+              sendString("4us (DD/HD)");
+        } else                                                                                
+        if (a<TIMING_DD_UPPER_6us+offsetIgnore) {                                                    
+              sendString("6us (DD)");
+        } else                                                                                
+        if (a<TIMING_DD_UPPER_8us+offsetIgnore) {                                                    
+              sendString("8us (DD)");
         } else {
           sendString("10us illegal mfm");
         }
@@ -1357,14 +1359,112 @@ void measureCurrentDisk() {
     }
 
     EICRA = 0;
-    TCCR2B=0;
+}
+
+// Read the track using a timings to calculate which MFM sequence has been triggered - Updated for Drawbridge Plus
+void readTrackDataFast() {
+    // Configure timer 2 just as a counter in NORMAL mode
+    TCCR2A = 0 ;              // No physical output port pins and normal operation
+    TCCR2B = bit(CS20);       // Precale = 1  
+    OCR2A = 0x00;
+    OCR2B = 0x00;
+    // First wait for the serial port to be available
+    while(!(UCSR0A & (1<<UDRE0)));   
+   
+    // Signal we're active
+    digitalWrite(PIN_ACTIVITY_LED,HIGH);
+
+    // Force data to be stored in a register
+    register unsigned char DataOutputByte = 0;
+
+    // While the INDEX pin is high wait if the other end requires us to
+    if (readByteFromUART())
+        while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
+
+    TCNT2=0;       // Reset the counter
+
+    register unsigned char counter;
+    long totalBits=0;
+    long target = ((long)RAW_TRACKDATA_LENGTH)*(long)8;
+
+    if (drawbridgePlusMode) {
+      // Drawbridge Plus mode
+
+      TCCR1A = 0;
+      TCCR1B = bit(CS10); // Capture from pin 8, falling edge. falling edge input capture, prescaler 1, no output compare
+      TCCR1C = 0;
+      unsigned char lastCounter = ICR1L;
+      TIFR1 |= bit(ICF1);
+      
+      while (totalBits<target) {
+            for (register unsigned char bits=0; bits<4; bits++) {
+                // Wait while pin is high
+                
+                while (!(TIFR1 & bit(ICF1))) {};
+                const unsigned char tmp = ICR1L;
+                counter = tmp - lastCounter, lastCounter = tmp;
+                TIFR1 |= bit(ICF1);
+               
+                DataOutputByte<<=2;   
+    
+                // DO NOT USE BRACES HERE, use the "," or the optomiser messes it up.  Numbers changed as these are best centered around where the bitcels actually are
+                if (counter<TIMING_DD_UPPER_4us - TIMING_OVERHEAD) DataOutputByte|=B00000001,totalBits+=2; else    // this accounts for just a '1' or a '01' as two '1' arent allowed in a row
+                if (counter<TIMING_DD_UPPER_6us - TIMING_OVERHEAD) DataOutputByte|=B00000010,totalBits+=3; else            
+                if (counter<TIMING_DD_UPPER_8us - TIMING_OVERHEAD) DataOutputByte|=B00000011,totalBits+=4; else      
+                                 totalBits+=5;   // this is treated as an 00001, which isnt allowed, but does work
+            }
+            if (!DataOutputByte) {
+              // sending 0 here is wrong and will cause the PC side to get confused.  so we set one ot be a 8us rather than the fake 10
+              DataOutputByte = B00000011; 
+              totalBits--;  // account for one less bit
+            }
+            UDR0 = DataOutputByte;
+      }
+      TCCR1B = 0;
+    } else {
+        
+        while (totalBits<target) {
+            for (register unsigned char bits=0; bits<4; bits++) {
+                // Wait while pin is high
+                
+                while (PIN_READ_DATA_PORT & PIN_READ_DATA_MASK) {
+                };
+                counter = TCNT2, TCNT2 = 0;  // reset - must be done with a COMMA
+               
+                DataOutputByte<<=2;   
+    
+                // DO NOT USE BRACES HERE, use the "," or the optomiser messes it up.  Numbers changed as these are best centered around where the bitcels actually are
+                if (counter<TIMING_DD_UPPER_4us) DataOutputByte|=B00000001,totalBits+=2; else    // this accounts for just a '1' or a '01' as two '1' arent allowed in a row
+                if (counter<TIMING_DD_UPPER_6us) DataOutputByte|=B00000010,totalBits+=3; else            
+                if (counter<TIMING_DD_UPPER_8us) DataOutputByte|=B00000011,totalBits+=4; else      
+                                 totalBits+=5;   // this is treated as an 00001, which isnt allowed, but does work
+                
+                // Wait until pin is high again
+                while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};
+            }
+            if (!DataOutputByte) {
+              // sending 0 here is wrong and will cause the PC side to get confused.  so we set one ot be a 8us rather than the fake 10
+              DataOutputByte = B00000011; 
+              totalBits--;  // account for one less bit
+            }
+            UDR0 = DataOutputByte;
+        }
+    }
+    // Because of the above rules the actual valid two-bit sequences output are 01, 10 and 11, so we use 00 to say "END OF DATA"
+    writeByteToUART(0);
+
+    // turn off the status LED
+    digitalWrite(PIN_ACTIVITY_LED,LOW);
+
+    // Disable the counter
+    TCCR2B = 0;      // No Clock (turn off)    
 }
 
 
 // This is a nasty way to unroll the FOR loop.  Would be nice if there was a directive to do this
 #define READ_UNROLLED_LOOP(p4uSec, p6uSec, p8uSec)                                                \
             while ((!(PCIFR & bit(PCIF2)))&&(!(TIFR2 & bit(OCF2B)))) {}                           \
-            counter = TCNT2, TCNT2 =  0;  /* reset counter.  the "," treats it as volatile  */    \
+            counter = TCNT2, TCNT2 = 0;  /* reset counter.  the "," treats it as volatile  */     \
             while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};                                \
             PCIFR |= bit(PCIF2);                                                                  \
             if (TIFR2 & bit(OCF2B)) TIFR2 |= bit(OCF2B);                                          \      
@@ -1388,8 +1488,34 @@ void measureCurrentDisk() {
             }                                                                                     \
 
 
-// Read the track using a timings to calculate which MFM sequence has been triggered, hwoever, this keeps running until a byte is received from the serial port telling it to stop
-void readContinuousStream() {
+// This is a nasty way to unroll the FOR loop.  Would be nice if there was a directive to do this
+#define READ_UNROLLED_LOOP_DRAWBRIDGE_PLUS(p4uSec, p6uSec, p8uSec)                                \
+            while ((!(TIFR1 & bit(ICF1)))&&(!(TIFR2 & bit(OCF2B)))) {}                            \
+            tmp = ICR1L; counter = tmp - lastCounter, lastCounter = tmp;                          \
+            TCNT2 = 0;  /* otherwise an overflow will be detected when we dont want it */         \
+            if (TIFR2 & bit(OCF2B)) TIFR2 |= bit(OCF2B); else TIFR1 |= bit(ICF1);                 \      
+            /* See what MFM 'window' this fits in. Its either a 2uSec, 4uSec or 6uSec,       */   \
+            /* or 8+ which isnt technically allowed.   Numbers changed as these are best     */   \
+            /* centered around where the bitcels actually are                                */   \
+            if (counter<TIMING_DD_UPPER_4us - TIMING_OVERHEAD) {                                  \
+              DataOutputByte|=p4uSec;                                                             \
+              if (counter >= TIMING_DD_UPPER_2us - TIMING_OVERHEAD)                               \
+                  counter -= TIMING_DD_UPPER_2us - TIMING_OVERHEAD; else counter=0;               \
+            } else                                                                                \
+            if (counter<TIMING_DD_UPPER_6us - TIMING_OVERHEAD) {                                  \
+              DataOutputByte|=p6uSec;                                                             \
+              counter -= TIMING_DD_UPPER_4us - TIMING_OVERHEAD;                                   \
+            } else                                                                                \
+            if (counter<TIMING_DD_UPPER_8us - TIMING_OVERHEAD) {                                  \
+              DataOutputByte|=p8uSec;                                                             \
+              counter -= TIMING_DD_UPPER_6us - TIMING_OVERHEAD;                                   \
+            } else {                                                                              \
+              /* >=TIMING_DD_UPPER_8us is an error but some disks do this  */                     \
+              counter=16;                                                                         \
+            }                                                                                     \
+
+// Read the track using a timings to calculate which MFM sequence has been triggered, hwoever, this keeps running until a byte is received from the serial port telling it to stop - Updated for Drawbridge Plus
+void readContinuousStream(bool highPrecision) {
     // Configure timer 2 just as a counter in NORMAL mode
     TCCR2A = 0 ;              // No physical output port pins and normal operation
     TCCR2B = bit(CS20);       // Precale = 1 (ie: no prescale)
@@ -1397,8 +1523,8 @@ void readContinuousStream() {
     OCR2A = 0x00;
     OCR2B = 0x00;
     // First wait for the serial port to be available to receive
-    while(!(UCSR0A & (1<<UDRE0)));   
-   
+    while(!(UCSR0A & (1<<UDRE0)));  
+
     // Signal we're active
     digitalWrite(PIN_ACTIVITY_LED,HIGH);
   
@@ -1410,7 +1536,12 @@ void readContinuousStream() {
         if (TCNT2>250) break;                             // this is to stop the inteface freezing if theres no disk in the drive
     };
     TCNT2 = 0;  // reset
-    while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};
+    if (drawbridgePlusMode) {
+      while (!(PIN_READ_DATA_PLUSMODE_PORT & PIN_READ_DATA_PLUSMODE_MASK)) {};      
+    } else {
+      while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};
+    }
+      
 
     EIFR |=bit(INTF0);  // clear the register saying it detected an index pulse
     TIFR2 |= bit(OCF2B);  // clear the overflow register
@@ -1422,31 +1553,126 @@ void readContinuousStream() {
     PCMSK0 = 0;
     PCMSK1 = 0;
     PCMSK2 = bit(PCINT20);
-    PCICR = bit(PCIE2); // Enable the interrupt for this pin
 
     // First one will just be 01010101 and is ignored by the reader anyway
     register unsigned char lastDataOutput = B01010101;
-    do {
+    register char total = 0;
 
-        // A variable to store the data we collect
-        register unsigned char DataOutputByte = 0;
-        register unsigned char counter, average;
+    if (drawbridgePlusMode) {
+      unsigned char tmp;
+      TCCR1A = 0;
+      TCCR1B = bit(CS10); // Capture from pin 8, falling edge. falling edge input capture, prescaler 1, no output compare
+      TCCR1C = 0;
+      
+      unsigned char lastCounter = ICR1L;
 
-        // format is INDEX B1 B2 Spd
-
-        READ_UNROLLED_LOOP(B00100000, B01000000, B01100000);
-        average = counter;
-        if ((EIFR&bit(INTF0))) {
-          EIFR|=bit(INTF0);
-          DataOutputByte|= 0x80;
-        };      
+      register char total = 0;
+      
+      if (highPrecision) {  
+          register unsigned char toTransmit = 0xC3;
+          do {
+                // A variable to store the data we collect
+                register unsigned char DataOutputByte = 0;
+                register unsigned char counter, average;
         
-        READ_UNROLLED_LOOP(B00001000, B00010000, B00011000);
-        average += counter;
-        average >>= 3;
-        UDR0 = average | DataOutputByte;
+                READ_UNROLLED_LOOP_DRAWBRIDGE_PLUS(B01000000, B10000000, B11000000);
+                average = counter;
+                if ((EIFR&bit(INTF0))) {
+                  EIFR|=bit(INTF0);
+                  average|= 0x80;
+                };   
+    
+                READ_UNROLLED_LOOP_DRAWBRIDGE_PLUS(B00010000, B00100000, B00110000);
+                average += counter;
+                UDR0 = toTransmit;
+                
+                READ_UNROLLED_LOOP_DRAWBRIDGE_PLUS(B00000100, B00001000, B00001100);
+                average += counter;
+                
+                READ_UNROLLED_LOOP_DRAWBRIDGE_PLUS(B00000001, B00000010, B00000011);
+                average += counter;
+                toTransmit = average; 
 
-    } while (!(UCSR0A & ( 1 << RXC0 )));
+                UDR0 = DataOutputByte;
+                
+            } while (!(UCSR0A & ( 1 << RXC0 )));
+        } else {
+            do {
+        
+                // A variable to store the data we collect
+                register unsigned char DataOutputByte = 0;
+                register unsigned char counter, average;
+        
+                // format is INDEX B1 B2 Spd
+        
+                READ_UNROLLED_LOOP_DRAWBRIDGE_PLUS(B00100000, B01000000, B01100000);
+                average = counter;
+                if ((EIFR&bit(INTF0))) {
+                  EIFR|=bit(INTF0);
+                  DataOutputByte|= 0x80;
+                };      
+
+                READ_UNROLLED_LOOP_DRAWBRIDGE_PLUS(B00001000, B00010000, B00011000);
+                average += counter;
+                average >>= 3;
+                UDR0 = average | DataOutputByte;
+        
+            } while (!(UCSR0A & ( 1 << RXC0 )));
+        }
+
+         TCCR1B = 0;
+    } else {       
+        if (highPrecision) {
+          register unsigned char toTransmit = 0xC3;
+          do {
+                // A variable to store the data we collect
+                register unsigned char DataOutputByte = 0;
+                register unsigned char counter, average;
+        
+                READ_UNROLLED_LOOP(B01000000, B10000000, B11000000);
+                average = counter;
+                if ((EIFR&bit(INTF0))) {
+                  EIFR|=bit(INTF0);
+                  average|= 0x80;
+                };   
+    
+                READ_UNROLLED_LOOP(B00010000, B00100000, B00110000);
+                average += counter;
+                UDR0 = toTransmit;
+                
+                READ_UNROLLED_LOOP(B00000100, B00001000, B00001100);
+                average += counter;
+                
+                READ_UNROLLED_LOOP(B00000001, B00000010, B00000011);
+                average += counter;
+                
+                toTransmit = average;
+                UDR0 = DataOutputByte;
+                
+            } while (!(UCSR0A & ( 1 << RXC0 )));
+        } else {
+            do {
+        
+                // A variable to store the data we collect
+                register unsigned char DataOutputByte = 0;
+                register unsigned char counter, average;
+        
+                // format is INDEX B1 B2 Spd        
+                READ_UNROLLED_LOOP(B00100000, B01000000, B01100000);
+                average = counter;
+                if ((EIFR&bit(INTF0))) {
+                  EIFR|=bit(INTF0);
+                  DataOutputByte|= 0x80;
+                };      
+
+                READ_UNROLLED_LOOP(B00001000, B00010000, B00011000);
+                average += counter;                
+                average >>= 3;
+                UDR0 = average | DataOutputByte;
+        
+            } while (!(UCSR0A & ( 1 << RXC0 )));
+        }
+    }
 
     // Read the byte that was sent to stop us, should be a 0, although we don't care
     unsigned char response = UDR0;
@@ -1467,10 +1693,655 @@ void readContinuousStream() {
     TCCR2B = 0;      // No Clock (turn off)    
     EICRA = 0;      // disable monitoring   
     PCMSK2 = 0;
-    PCICR = 0;
     OCR2A = 0;
     OCR2B = 0;
 }
+
+
+// I originally coded this in ASM as I wasn't sure it was going to be fast enough, it works both ways but is slightly faster with ASM, so i'll leave it enabled
+#define USE_ASM
+// Enables the HD PLL.  This is always on while this is defined.  It helps improve poor disks with lots of flutter
+#define ENABLE_PLL_DRAWBRIDGE_PLUS
+
+// This is a nasty way to unroll the FOR loop.  This has an error of upto 3 clock ticks. For DD this isn't a problem, for HD it can be. Which is why Drawbridge Plus exists
+#define READ_UNROLLED_LOOP_HD_BITMODE()                                                     \
+            while (!(PCIFR & bit(PCIF2))) {};                                               \
+            counter = TCNT0,TCNT0 = TIMING_OVERHEAD + DB_CLASSIC_HD_MIDDLE;                \
+            while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};                          \
+            PCIFR |= bit(PCIF2);                                                            \
+            counter /= 16;                                                                  \
+            if (counter < 2) {                                                              \
+              if ((EIFR&bit(INTF0))) {                                                      \
+                EIFR|=bit(INTF0);                                                           \
+                DataOutputByte |= 3;                                                        \
+              }                                                                             \
+            } else                                                                          \
+            if (counter == 2) DataOutputByte |= 1; else DataOutputByte |= 2;                \ 
+            asm("wdr");               /* reset watchdog timer */                            \
+            WDTCSR |= bit(WDIE);      /* Reset its flags */                                 \
+
+
+#define READ_UNROLLED_LOOP_HD_ASM_BITMODE(id)                                                                                                     \
+            asm("sbis 0x1b, 2                    \n\t"   /* fetch PCIFR & bit(PCIF2) and skip the next line if its set */                         \
+                "rjmp .-4                        \n\t"   /* go back and try again */                                                              \
+                "in  r20, 0x26                   \n\t"   /* 1 Tick,   Read Timer0 value */                                                        \
+                "out 0x26, r22                   \n\t"   /* 1 Tick,   Reset Timer0 value */                                                       \
+                                                                                                                                                  \
+                "sbis  0x09, 4                   \n\t"   /* Check the READ DATA pin */                                                            \
+                "rjmp  .-4                       \n\t"   /* Jump back if its still within a pulse */                                              \
+                "sbi 0x1b, 2                     \n\t"   /* Reset the flag that started all of this */                                            \
+                                                                                                                                                  \
+                "swap r20                        \n\t"   /* 1 Tick, swap the nybbles */                                                           \
+                "andi r20, 15                    \n\t"   /* keep the last 4 bits */                                                               \
+                "cpi r20, 2                      \n\t"   /* compare with 2 */                                                                     \
+                "brlo handle2us_" id "           \n\t"   /* If less than 2, then branch to the 2us handler */                                     \
+                                                                                                                                                  \
+                "breq handle3us_" id "           \n\t"   /* If equal to 2, branch to the 3us handler */                                           \
+                "ori r24, 2                      \n\t"   /* Store the code for 4us */                                                             \
+                "rjmp endcode_" id "             \n\t"   /* goto the end */                                                                       \
+                                                                                                                                                  \
+                "handle3us_" id ":               \n\t"   /* 3us Handler */                                                                        \                                                                                                                                                  
+                "ori r24, 1                      \n\t"   /* Store the code for 3us */                                                             \
+                "rjmp endcode_" id "             \n\t"   /* goto the end */                                                                       \
+                                                                                                                                                  \
+                "handle2us_" id ":               \n\t"   /* 2us Handler */                                                                        \
+                "sbis  0x1c, 0                   \n\t"   /* 1/3 if (!(EIFR&bit(INTF0))) */                                                        \
+                "rjmp endcode_" id "             \n\t"   /* Goto the end if the INDEX pulse is not detected */                                    \
+                "sbi 0x1c, 0                     \n\t"   /* 2 Reset the register */                                                               \
+                "ori r24, 3                      \n\t"   /* Save the special code code for what we discovered */                                  \
+                                                                                                                                                  \
+                "endcode_" id ":                 \n\t"   /* the end */                                                                            \
+                "wdr                             \n\t"   /* Reset the watchdog timer */                                                           \  
+                "lds  r20, 0x0060                \n\t"   /* read WDTCSR  */                                                                       \              
+                "ori  r20, 0x40                  \n\t"   /* bit(WDIE)  */                                                                         \              
+                "sts  0x0060, r20                \n\t"   /* write WDTCSR  */                                                                      \    
+              );
+
+
+// This is a nasty way to unroll the FOR loop.  
+#define READ_UNROLLED_LOOP_HD_BITMODE_DRAWBRIDGE_PLUS()                                    \
+            while ((!(TIFR1 & bit(ICF1)))&&(!(TIFR0 & bit(OCF0B)))) {}                      \
+            tmp = ICR1L; counter = tmp - lastCounter, lastCounter = tmp;                    \
+            TIFR1 |= bit(ICF1);                                                             \
+            counter += pllValue;                                                            \  
+            total += 7-(counter & 0x0F);                                                    \          
+            counter = (counter / 16) & 15;                                                  \
+            if (counter < 2) {                                                              \
+              if ((EIFR&bit(INTF0))) {                                                      \
+                EIFR|=bit(INTF0);                                                           \
+                DataOutputByte |= 3;                                                        \
+              }                                                                             \
+            } else {                                                                        \
+              if (counter == 2) DataOutputByte |= 1; else DataOutputByte |= 2;              \
+            }                                                                               \
+            TCNT0 = 0;                                                                      \
+            TIFR0 |= bit(OCF0B);                                                            \
+
+
+#define READ_UNROLLED_LOOP_HD_ASM_BITMODE_DRAWBRIDGE_PLUS(id)                                                                                     \
+            asm("sbic  %0, %1                     \n\t"   /* fetch TIFR1 & bit(ICF1) and skip the next line if its clear */                       \
+                "rjmp  capturedata_" id "         \n\t"   /* skip other test */                                                                   \
+                "sbis  %2, %3                     \n\t"   /* fetch (TIFR0 & bit(OCF0B) and skip the next line if its set */                       \
+                "rjmp  .-8                        \n\t"   /* start checking again */                                                              \
+                                                                                                                                                  \
+                "capturedata_" id ":              \n\t"   /* start of capture code */                                                             \
+                                                                                                                                                  \
+                "lds r21, %4                      \n\t"   /* Copy ICR1L into r21 (0x0086) */                                                      \ 
+                "mov r20, r21                     \n\t"   /* take a copy of this value */                                                         \
+                "sub r20, r25                     \n\t"   /* subtract previous timer value */                                                     \
+                "mov r25, r21                     \n\t"   /* store new timer value */                                                             \
+                                                                                                                                                  \                
+                "sbi %0, %1                       \n\t"   /* Clear capture flag TIFR1 |= bit(ICF1); */                                            \
+                                                                                                                                                  \                
+                /* At this point, r20=time difference since last bit-cell, r25 is the time of this bit-cell (and 21 is a copy) */                 \
+                                                                                                                                                  \
+                "add r20, r22                    \n\t"   /* -8 (by default) */                                                                    \
+                                                                                                                                                  \
+                "mov r21, r20                    \n\t"   /* Take a copy of the value that has the +/- pll */                                      \
+                "andi r21, 0x0F                  \n\t"   /* the lower nybble.  This is the offset within the 16 ticks */                          \
+                "subi r28, -7                    \n\t"   /* Add 7 to r28 (total) */                                                               \
+                "sub r28, r21                    \n\t"   /* Subtract from r28, r21 the offset */                                                  \
+                                                                                                                                                  \
+                "swap r20                        \n\t"   /* 1 Tick,   swap the nybbles */                                                         \
+                "andi r20, 15                    \n\t"   /* keep the last 4 bits */                                                               \
+                "cpi r20, 2                      \n\t"   /* compare with 2 */                                                                     \
+                "brlo handle2us_" id "           \n\t"   /* If less than 2, then bramch to the 2us handler */                                     \
+                                                                                                                                                  \
+                "breq handle3us_" id "           \n\t"   /* If equal to 2, branch to the 3us handler */                                           \
+                "ori r24, 2                      \n\t"   /* Store the code for 4us */                                                             \
+                "rjmp endcode_" id "             \n\t"   /* goto the end */                                                                       \
+                                                                                                                                                  \
+                "handle3us_" id ":               \n\t"   /* 3us Handler */                                                                        \                                                                                                                                                  
+                "ori r24, 1                      \n\t"   /* Store the code for 3us */                                                             \
+                "rjmp endcode_" id "             \n\t"   /* goto the end */                                                                       \                
+                                                                                                                                                  \
+                "handle2us_" id ":               \n\t"   /* 2us Handler */                                                                        \
+                "sbis  %5, %6                    \n\t"   /* 1/3 if (!(EIFR&bit(INTF0))) 0x1c */                                                   \
+                "rjmp endcode_" id "             \n\t"   /* Goto the end if the INDEX pulse is not detected */                                    \
+                "sbi %5, %6                      \n\t"   /* 2 Reset the register */                                                               \
+                "ori r24, 3                      \n\t"   /* Save the special code code for what we discovered */                                  \
+                                                                                                                                                  \
+                "endcode_" id ":                 \n\t"   /* the end */                                                                            \
+                "sbi %2, %3                      \n\t"   /* Reset overflow flag */                                                                \
+                "out %7, r26                     \n\t"   /* 1 Tick,   Reset Timer0 value */                                                       \
+              :: "i" _SFR_IO_ADDR(TIFR1), "i" (ICF1), "i" _SFR_IO_ADDR(TIFR0), "i" (OCF0B), "m" (ICR1L), "i" _SFR_IO_ADDR(EIFR), "i" (INTF0), "i" _SFR_IO_ADDR(TCNT0)  : );
+
+#ifdef USE_ASM
+
+// This doesnt affect any of the special flag registers so dont need to push or pop anything
+ISR(WDT_vect, ISR_NAKED) {
+    asm("ldi r25, 0xFF          \n"       // Set timed out register
+         "sbi %0, %2            \n"       // OUTPUT Mode
+         "cbi %1, %2            \n"       // LOW
+         "cbi %0, %2            \n"       // INPUT Mode
+         "sbi %1, %2            \n"       // Pullup
+         "reti                  \n"       // And return
+         :: "i"_SFR_IO_ADDR(PIN_READ_DATA_IO_DIR), "i"_SFR_IO_ADDR(PIN_READ_DATA_PORT_WRITE), "i"(PIN_READ_DATA): );  // PIN_READ_DATA isnt strictly correct
+}
+   
+#else
+volatile bool timedOut = false;
+// Used to detect lockups because of no data or disk removed in DrawBridge Classic mode HD reading
+ISR(WDT_vect) {
+   // When the timer is triggered
+   timedOut = true; 
+   PIN_READ_DATA_IO_DIR |= PIN_READ_DATA_MASK;  // OUTPUT Mode
+   PIN_READ_DATA_PORT_WRITE &= ~PIN_READ_DATA_MASK;  // LOW
+   PIN_READ_DATA_IO_DIR &= ~PIN_READ_DATA_MASK;  // INPUT Mode
+   PIN_READ_DATA_PORT_WRITE |= PIN_READ_DATA_MASK;  // Pullup
+}
+#endif
+
+// Read the track using a timings to calculate which MFM sequence has been triggered, hwoever, this keeps running until a byte is received from the serial port telling it to stop
+void readContinuousStreamHD() {
+    // Configure timer 2 just as a counter in NORMAL mode
+    TCCR0A = 0 ;              // No physical output port pins and normal operation
+    TCCR0B = bit(CS20);       // Precale = 1 (ie: no prescale)
+    EICRA = bit(ISC01);       // falling edge of INT0 generates an interrupt, they are turned off, but its an easy way for us to detect a falling edge rather than monitoring a pin
+    OCR0A = 0x00;
+    OCR0B = 0x00;
+    // First wait for the serial port to be available to receive
+    while(!(UCSR0A & (1<<UDRE0)));   
+   
+    // Signal we're active
+    digitalWrite(PIN_ACTIVITY_LED,HIGH);
+  
+    // Index alignment won't work if we're already at the index when this starts.  The index pulse is actually quite long and spans several bytes of data, could be several ms in length
+    while (!(PIN_INDEX_PORT & PIN_INDEX_MASK)) {};
+
+    EIFR |=bit(INTF0);  // clear the register saying it detected an index pulse
+    TIFR0 |= bit(OCF2B);  // clear the overflow register   
+    TCNT0 = 0;  // reset
+
+    if (drawbridgePlusMode) {
+      TCCR1A = 0;
+      TCCR1B = bit(CS10); // Capture from pin 8, falling edge. falling edge input capture, prescaler 1, no output compare
+      TCCR1C = 0;
+
+#ifdef USE_ASM
+      // Start, and protect
+      asm("push r20             \n\t"  // counter value after manipulations
+          "push r21             \n\t"  // Temp variable
+          "push r22             \n\t"  // PLL Offset Value
+          "push r23             \n\t"  // UART status
+          "push r24             \n\t"  // DataOutputByte
+          "push r25             \n\t"  // lastCounter
+          "push r26             \n\t"  // Zero
+          "push r28             \n\t"  // Total
+          "ldi r22, %0          \n\t"  // Load the PLL default of -8 which shoudl be bang in the middle
+          "lds r25, %1          \n\t"  // Grab something like the current value from ICR1L (0x0086)
+          "sbi %2, %3            \n\t" // And clear the capture flag (ICF1 in TIFR1)
+          "ldi r26, 0           \n\t"  // Clear r26
+          "ldi r28, 0           \n\t"  // Clear r28 (total)
+          "loophere2:           \n\t"
+        :: "i" (PLL_HD_START_VALUE), "m" (ICR1L), "i" _SFR_IO_ADDR(TIFR1), "i" (ICF1) :);
+  
+      // 5 including loop
+      asm("add r24, r24                    \n\t"   /* SHL 1 */ 
+          "add r24, r24                    \n\t"); /* SHL 1 */       
+
+#ifdef ENABLE_PLL_DRAWBRIDGE_PLUS
+      asm("cpi r28, %0                     \n\t"   // Compare total to PLL_HD_THRESHOLD
+          "brlt skip_plus_PLL1             \n\t"   // skip the following code
+          "ldi r28, 0                      \n\t"   // total = 0
+          "subi r22, 0xFF                  \n\t"   // pll++
+          "skip_plus_PLL1:                 \n\t" 
+          :: "i" (PLL_HD_THRESHOLD+1) : );
+#endif
+           
+      READ_UNROLLED_LOOP_HD_ASM_BITMODE_DRAWBRIDGE_PLUS("plusl1");       
+  
+      // 5-7 Ticks
+      asm(
+          "sts %0, r24      \n\t"  // 2 Ticks  UDR0 = DataOutputByte (0x00C6)
+          "ldi r24, 0           \n\t"    // 1 Tick   DataOutputByte=0;
+          :: "m" (UDR0) : );  // Next byte time
+      
+      READ_UNROLLED_LOOP_HD_ASM_BITMODE_DRAWBRIDGE_PLUS("plusl2");
+  
+      // 2 ticks
+      asm("add r24, r24                    \n\t"   /* SHL 1 */ 
+          "add r24, r24                    \n\t"   /* SHL 1 */    
+          ); 
+
+#ifdef ENABLE_PLL_DRAWBRIDGE_PLUS
+      asm("cpi r28, %0                     \n\t"   // Compare total to -PLL_HD_THRESHOLD
+          "brge skip_plus_PLL2             \n\t"   // skip the following code
+          "ldi r28, 0                      \n\t"   // total = 0
+          "subi r22, 1                     \n\t"    // pll--
+          "skip_plus_PLL2:                 \n\t"
+          :: "i" (-PLL_HD_THRESHOLD) : );          
+#endif
+
+      READ_UNROLLED_LOOP_HD_ASM_BITMODE_DRAWBRIDGE_PLUS("plusl3");
+      asm(
+          "lds r23, %0                     \n\t"  // 2 ticks - r23 = UCSR0A
+          "add r24, r24                    \n\t"   /* SHL 1 */ 
+          "add r24, r24                    \n\t"   /* SHL 1 */
+          :: "m" (UCSR0A) :);
+      
+      READ_UNROLLED_LOOP_HD_ASM_BITMODE_DRAWBRIDGE_PLUS("plusl4");
+      
+      asm("sbrs r23, %0          \n\t"   // 1 tick, skip if set (RXC0 in UART status)
+          "rjmp loophere2       \n\t"    // 2 ticks
+          "pop r28              \n\r"
+          "pop r26              \n\r"
+          "pop r25              \n\r"
+          "pop r24              \n\r"
+          "pop r23              \n\r"
+          "pop r22              \n\r"
+          "pop r21              \n\r"
+          "pop r20              \n\r"
+          :: "i" (RXC0) : );
+#else
+      register unsigned char DataOutputByte = 0;
+      register unsigned char counter;
+      register unsigned char tmp;
+      register char pllValue = PLL_HD_START_VALUE;
+      register char total = 0;
+
+      unsigned char lastCounter = ICR1L;
+      TIFR1 |= bit(ICF1);
+
+      // This implements a basic PLL to help with really bad disks
+      for (;;) {      
+        DataOutputByte<<=2; 
+
+#ifdef ENABLE_PLL_DRAWBRIDGE_PLUS        
+        if (total>PLL_HD_THRESHOLD) {
+          total = 0;
+          pllValue++;
+        }
+#endif        
+        READ_UNROLLED_LOOP_HD_BITMODE_DRAWBRIDGE_PLUS();   
+        
+        UDR0 = DataOutputByte, DataOutputByte=0; 
+        READ_UNROLLED_LOOP_HD_BITMODE_DRAWBRIDGE_PLUS();
+        
+        DataOutputByte<<=2;
+#ifdef ENABLE_PLL_DRAWBRIDGE_PLUS        
+        if (total<-PLL_HD_THRESHOLD) {
+          total = 0;
+          pllValue--;
+        }
+#endif        
+
+        READ_UNROLLED_LOOP_HD_BITMODE_DRAWBRIDGE_PLUS();
+        
+        if ((UCSR0A & ( 1 << RXC0 ))) break;
+        DataOutputByte<<=2;      
+        READ_UNROLLED_LOOP_HD_BITMODE_DRAWBRIDGE_PLUS();
+      }
+#endif      
+
+      TCCR1B = 0;
+    } else {
+      // In non DB+ mode, we can't add a timeout for reading as it makes the jitter worse.
+      // But we can use the Watchdog Timer, which will trigger an Interrupt when the timer expires!
+            
+      while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};
+
+      // This sets up what would be an interrupt for when the READ PIN is signalled (unfortunatly we can't choose the direction. Its just set when it changes)
+      PCMSK0 = 0;
+      PCMSK1 = 0;
+      PCMSK2 = bit(PCINT20);
+      PCIFR |= bit(PCIF2); 
+      WDTCSR |= bit(WDCE) | bit(WDE);
+      WDTCSR = bit(WDIE) | bit(WDP1);   // enable watchdog timer interrupt, for 64ms.  There shouldnt be a gap that long
+
+  #ifdef USE_ASM
+  
+      // Start, and protect
+      asm("push r20             \n\t"  // counter value
+          "push r21             \n\t"  // temp variable
+          "push r22             \n\t"  // Counter reset value (pll)
+          "push r23             \n\t"  // UART status
+          "push r24             \n\t"  // DataOutputByte
+          "push r25             \n\t"  // Timed out
+          "push r28             \n\t"  // Total
+          "ldi r22, %0          \n\t"  
+          "ldi r28, %0          \n\t"  
+          "ldi r25, 0           \n\t"  // Reset timed out
+          "sei                  \n\t"  // Start interrupts
+          "loophere:            \n\t"
+        :: "i" (TIMING_OVERHEAD + DB_CLASSIC_HD_MIDDLE) :);
+  
+      // 5 including loop
+      asm("add r24, r24                    \n\t"   /* SHL 1 */ 
+          "add r24, r24                    \n\t"); /* SHL 1 */       
+  
+      READ_UNROLLED_LOOP_HD_ASM_BITMODE("l1");       
+  
+      // 5-7 Ticks
+      asm(
+         "sts %0, r24           \n\t"  // 2 Ticks  UDR0 = DataOutputByte
+         "ldi r24, 0            \n\t"    // 1 Tick   DataOutputByte=0;
+         :: "m" (UDR0) : );  // Next byte time
+      
+      READ_UNROLLED_LOOP_HD_ASM_BITMODE("l2");
+  
+      // 2 ticks
+      asm("add r24, r24                    \n\t"   /* SHL 1 */ 
+          "add r24, r24                    \n\t"   /* SHL 1 */    
+          ); 
+                   
+      READ_UNROLLED_LOOP_HD_ASM_BITMODE("l3");
+      asm(
+          "lds r23, %0                    \n\t"  // 2 ticks r23=UCSR0A
+          "add r24, r24                    \n\t"   /* SHL 1 */ 
+          "add r24, r24                    \n\t"   /* SHL 1 */
+          :: "m" (UCSR0A) : );
+      
+      READ_UNROLLED_LOOP_HD_ASM_BITMODE("l4");
+
+      // Check for timeout
+      asm("sbrc r25, 0          \n\t"    // Skip the line if the bit is clear.  We chage it to 255 if its timed out
+          "rjmp timedOut        \n\t");  // 2 ticks
+      
+      asm("sbrs r23, %0         \n\t"    // 1 tick, skip if set (RXC0 in UART status)
+          "rjmp loophere        \n\t"    // 2 ticks
+          "timedOut:            \n\t"    // oh dear
+          "cli                  \n\t"    // turn off interrupts
+          "pop r28              \n\r"
+          "pop r25              \n\r"
+          "pop r24              \n\r"
+          "pop r23              \n\r"
+          "pop r22              \n\r"
+          "pop r21              \n\r"
+          "pop r20              \n\r"
+          :: "i" (RXC0) : );
+  
+  #else
+      register unsigned char DataOutputByte = 0;
+      register unsigned char counter;
+      register unsigned char tmp;
+      register char total = 0;
+
+      bool timedOut = false;
+      sei();
+    
+      for (;;) {   
+        DataOutputByte<<=2;
+
+        READ_UNROLLED_LOOP_HD_BITMODE();  
+        
+        UDR0 = DataOutputByte, DataOutputByte=0;
+        
+        READ_UNROLLED_LOOP_HD_BITMODE();
+        DataOutputByte<<=2;
+
+        READ_UNROLLED_LOOP_HD_BITMODE();
+        
+        if ((UCSR0A & ( 1 << RXC0 ))) break;
+        DataOutputByte<<=2;      
+        
+        READ_UNROLLED_LOOP_HD_BITMODE();
+        
+        if (timedOut) break;
+      }
+      cli();
+  #endif
+      // Turn off WDT 
+      WDTCSR |= bit(WDCE) | bit(WDE);
+      WDTCSR = 0x00;
+
+      PCMSK2 = 0;
+    }
+
+    // Read the byte that was sent to stop us, should be a 0, although we don't care
+    unsigned char response = UDR0;
+    // We want to make sure the PC knows we've quit, and whilst this isnt fool proof its a start.  
+    // The chance of this exact sequence coming from MFM data from the drive is slim I guess
+    // A little hacky, bit without woriding another pin to something we dont have any other options
+    writeByteToUART('X');
+    writeByteToUART('Y');
+    writeByteToUART('Z');
+    writeByteToUART(response);
+    writeByteToUART('1');
+    
+    // turn off the status LED
+    digitalWrite(PIN_ACTIVITY_LED,LOW);
+
+    // Disable the counter
+    TCCR0B = 0;      // No Clock (turn off)    
+    EICRA = 0;      // disable monitoring   
+    OCR2A = 0;
+    OCR2B = 0;
+}
+
+// Attempt to calculate the RPM of the drive
+void handleMeasureRPM() {
+    // Configure timer 2 just as a counter in NORMAL mode
+    TCCR2A = 0 ;              // No physical output port pins and normal operation
+    TCCR2B = bit(CS20);       // Precale = 1  
+    OCR2A = 0x00;
+    OCR2B = 0x00;
+   
+    // Signal we're active
+    digitalWrite(PIN_ACTIVITY_LED,HIGH);
+
+    // Wait for the index pulse
+    while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
+    // And then for it to go away again
+    while (!(PIN_INDEX_PORT & PIN_INDEX_MASK))  {};
+
+    TCNT2=0;       // Reset the counter
+
+    char rotations = 0;
+    bool isIndexHigh = false;
+    unsigned char lastTCNT2 = 0;
+    unsigned long overflowCounter = 0;
+    const unsigned char TotalRevolutions = 5;
+    while (rotations<TotalRevolutions) {      
+      if (isIndexHigh) {
+        if (!(PIN_INDEX_PORT & PIN_INDEX_MASK)) {
+          isIndexHigh = false;
+          rotations++;
+        }        
+      } else {
+        if (PIN_INDEX_PORT & PIN_INDEX_MASK) {
+          isIndexHigh = true;
+        }
+      }   
+
+      // Monitor TCNT2.
+      unsigned char nextTCNT2 = TCNT2;
+      if (nextTCNT2<lastTCNT2) {
+        // Overflow occured
+        overflowCounter++;
+      }  
+      lastTCNT2 = nextTCNT2;
+    }
+
+    // Calculate the time per revolution in 'ticks'
+    unsigned long totalTicks = ((overflowCounter * 256) + lastTCNT2) / TotalRevolutions;
+    float rpm = F_CPU / (totalTicks / 60.0f);
+
+    // Now output the float
+    char strOutput[10];
+    dtostrf(rpm, 4, 2, strOutput);
+    sendString(strOutput);
+    sendString("\n");
+    
+    // turn off the status LED
+    digitalWrite(PIN_ACTIVITY_LED,LOW);
+
+    // Disable the counter
+    TCCR2B = 0;      // No Clock (turn off)   
+}
+
+// Perform a manual test to work out the density of the medium inserted.  This also works as a manual 'detect disk' - Updated for Drawbridge Plus
+void testDiskDensity() {    
+     writeByteToUART('1');
+     
+    // This is a short-cut used by the slimline drives
+    if ((disableDensityDetection) || (digitalRead(PIN_HD) == LOW)) {
+        writeByteToUART('D');
+        return;
+    }
+    
+    // This is much harder
+    startDriveForOperation();
+
+    // Configure timer 2 just as a counter in NORMAL mode
+    TCCR2A = 0 ;              // No physical output port pins and normal operation
+    TCCR2B = bit(CS20);       // Precale = 1 (ie: no prescale)
+    EICRA = bit(ISC01);       // falling edge of INT0 generates an interrupt, they are turned off, but its an easy way for us to detect a falling edge rather than monitoring a pin
+    OCR2A = 0x00;
+    OCR2B = 0x00;
+
+    TCNT2 = 0;  // reset
+    if (drawbridgePlusMode) {
+       while (!(PIN_READ_DATA_PLUSMODE_PORT & PIN_READ_DATA_PLUSMODE_MASK)) {};
+    } else {
+       while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};
+    }
+
+    EIFR |=bit(INTF0);  // clear the register saying it detected an index pulse
+    TIFR2 |= bit(OCF2B);  // clear the overflow register
+    OCR2B = TIMING_DD_UPPER_8us; // This is set to the upper bound.  If we exceed this we must have received a load of non-flux data, this allows us to write '0000' on the PC and loop back round
+
+    // This sets up what would be an interrupt for when the READ PIN is signalled (unfortunatly we can't choose the direction. Its just set when it changes)
+    // But this allows us to make sure we dont miss a bit, although the timing might be off slightly.  This is mainly used when disks have very long areas of
+    // no flux transitions, typilcally used for copy protection
+    PCMSK0 = 0;
+    PCMSK1 = 0;
+    PCMSK2 = bit(PCINT20);
+
+    unsigned int overflows = 0;
+    unsigned char lastTCNT2;
+
+    unsigned int HDPulses = 0;
+    unsigned int DDPulses = 0;
+    unsigned char counter;
+    unsigned int errors = 0;
+
+    // Thats a maximum of 1 second of overflows which should be enough for the disk to spin up and start sending data
+    const unsigned int MAX_OVERFLOWS = driveEnabled ? ((F_CPU / 256) / 4) : (F_CPU / 256);
+
+    if (!driveEnabled) {
+       digitalWrite(PIN_DRIVE_ENABLE_MOTOR,LOW);
+       smalldelay(350);
+    }
+
+    // Don't need the higher accuracy here, so just a modified version of the loop
+    if (drawbridgePlusMode) {
+      TCCR1A = 0;
+      TCCR1B = bit(CS10); // Capture from pin 8, falling edge. falling edge input capture, prescaler 1, no output compare
+      TCCR1C = 0;
+      unsigned char lastCounter = ICR1L;
+      
+      while (overflows < MAX_OVERFLOWS) {
+         while ((!(TIFR1 & bit(ICF1)))&&(!(TIFR2 & bit(OCF2B)))) {};
+         TCNT2 =  0;
+         if (TIFR2 & bit(OCF2B)) {
+           TIFR2 |= bit(OCF2B);
+           overflows++;
+         } else {
+           const unsigned char tmp = ICR1L;
+           counter = tmp - lastCounter, lastCounter = tmp;
+           TIFR1 |= bit(ICF1);
+           if ((counter > 8) && (counter <= (TIMING_HD_UPPER_3us - TIMING_OVERHEAD))) HDPulses++; else
+           if ((counter >  (TIMING_DD_UPPER_4us - TIMING_OVERHEAD + 8)) && (counter <= (TIMING_DD_UPPER_8us - TIMING_OVERHEAD))) DDPulses++; else
+               errors++;         
+           if ((HDPulses>6000) || (DDPulses>6000) || (errors > 18000)) break;
+         }
+      }
+      TCCR1B = 0;
+      
+    } else {
+      while (overflows < MAX_OVERFLOWS) {
+         while ((!(PCIFR & bit(PCIF2)))&&(!(TIFR2 & bit(OCF2B)))) {};
+         counter = TCNT2, TCNT2 =  0;  
+         while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};
+         PCIFR |= bit(PCIF2);
+         if (TIFR2 & bit(OCF2B)) {
+           TIFR2 |= bit(OCF2B);
+           overflows++;
+         } else {
+          if ((counter > 8) && (counter <= TIMING_HD_UPPER_3us)) HDPulses++; else
+          if ((counter >  TIMING_DD_UPPER_4us + 8) && (counter <= TIMING_DD_UPPER_8us)) DDPulses++; else
+            errors++;      
+          if ((HDPulses>6000) || (DDPulses>6000) || (errors > 18000)) break;
+         }
+      }
+    }
+
+    if (!driveEnabled) {
+      digitalWrite(PIN_DRIVE_ENABLE_MOTOR,HIGH);
+    }    
+
+    if ((HDPulses < 10) && (DDPulses < 10)) writeByteToUART('x'); else // no disk
+    if (HDPulses > DDPulses) writeByteToUART('H'); else writeByteToUART('D');
+   
+    stopDriveForOperation();
+
+    // Disable the counter
+    TCCR2B = 0;      // No Clock (turn off)    
+    EICRA = 0;      // disable monitoring   
+    PCMSK2 = 0;
+    OCR2A = 0;
+    OCR2B = 0;
+}
+
+// Attempt to do a full reset
+void doReset() {
+  currentTrack = -1;
+  driveEnabled  = 0;
+  disktypeHD = 0;
+
+  cli();
+  TIMSK0=0;
+  TIMSK1=0;
+  TIMSK2=0;
+  PCICR = 0;
+  PCIFR = 0;
+  PCMSK0 = 0;
+  PCMSK2 = 0;
+  PCMSK1 = 0;
+
+  digitalWrite(PIN_SELECT_DRIVE,HIGH);
+  digitalWrite(PIN_WRITE_DATA, HIGH);
+  digitalWrite(PIN_WRITE_GATE, HIGH);
+  digitalWrite(PIN_SELECT_DRIVE,LOW);
+  digitalWrite(PIN_DRIVE_ENABLE_MOTOR,HIGH);
+  digitalWrite(PIN_HEAD_SELECT,LOW);    
+  digitalWrite(PIN_MOTOR_STEP, HIGH);
+  digitalWrite(PIN_ACTIVITY_LED,LOW);
+  digitalWrite(PIN_SELECT_DRIVE,HIGH);
+  refreshEEPROMSettings();
+  
+  writeByteToUART('1');
+}
+
+#define DRAWBRIDGE_BETA_RELEASE        0
+
+#define FLAGS_HIGH_PRECISION_SUPPORT   B00000001     // change to how the DD data is sent
+#define FLAGS_DISKCHANGE_SUPPORT       B00000010     // Does the drive support diskchange
+#define FLAGS_DRAWBRIDGE_PLUSMODE      B00000100     // Is this a Drawbridge Plus board
+#define FLAGS_DENSITYDETECT_ENABLED    B00001000     // Is high denstiy detection disabled? (if so its always reported as double density)
+#define FLAGS_SLOWSEEKING_MODE         B00010000     // If slow seeking is enabled
+#define FLAGS_FIRMWARE_BETA            B10000000     // Is this beta firmware?
 
 // The main command loop
 void loop() { 
@@ -1483,17 +2354,39 @@ void loop() {
     digitalWrite(PIN_SELECT_DRIVE, LOW);
     smalldelay(1);
 
-    switch (command) {
+    switch (command) {        
         case 'x': break; // this is ignored.  It's to help 'stop streaming' mode if it gets stuck on startup
+        case 'R': doReset(); break;
         case 'M': if (!driveEnabled) sendString("Drive motor not switched on.\n"); else measureCurrentDisk(); break;
-    
+        case 'P': if (driveEnabled) { 
+                      writeByteToUART('1');
+                      handleMeasureRPM(); 
+                  } else writeByteToUART('0');
+                  break;
+        case 'T': testDiskDensity(); break;
+        case 't': if (disableDensityDetection) writeByteToUART('D'); 
+                      else 
+                        if (digitalRead(PIN_HD) == LOW) writeByteToUART('D'); else writeByteToUART('H'); 
+                  break;
+            
         // Command: "?" Means information about the firmware
         case '?':writeByteToUART('1');  // Success
                  writeByteToUART('V');  // Followed
                  writeByteToUART('1');  // By
                  writeByteToUART(advancedControllerMode ? ',' : '.');  // Advanced controller version
-                 writeByteToUART('8');  // Number
+                 writeByteToUART('9');  // Number
                  break;
+        case '@': writeByteToUART('1');  // Success
+                  writeByteToUART(FLAGS_HIGH_PRECISION_SUPPORT | 
+                                  (DRAWBRIDGE_BETA_RELEASE ? FLAGS_FIRMWARE_BETA : 0) | 
+                                  (drawbridgePlusMode ? FLAGS_DRAWBRIDGE_PLUSMODE : 0) | 
+                                  (advancedControllerMode ? FLAGS_DISKCHANGE_SUPPORT : 0) | 
+                                  (disableDensityDetection ? 0 : FLAGS_DENSITYDETECT_ENABLED) |
+                                  (slowerDiskSeeking ? FLAGS_SLOWSEEKING_MODE : 0)  
+                                  );
+                  writeByteToUART(0);  // RFU
+                  writeByteToUART(15);  // build number
+                  break;
   
         // Command "." means go back to track 0
         case '.':if (goToTrack0())    // reset 
@@ -1509,7 +2402,8 @@ void loop() {
                   break;
 
         // Command "=" means goto track.  Should be formatted as =00 or =32 etc.  This also reports disk change and write protect status
-        case '=': if (gotoTrackX(true)) {                      
+        case '=': if (gotoTrackX(true)) { 
+                               
                   } else writeByteToUART('0'); 
                   break;  
 
@@ -1528,14 +2422,26 @@ void loop() {
 
         // Command "{" Read data continuously from the drive until a byte is sent from the PC
         case '{': if (driveEnabled) {
-                    if(disktypeHD)
-                      writeByteToUART('0');   // not supported
-                    else {
+                    if(disktypeHD) {
+                      writeByteToUART('1');   
+                      readContinuousStreamHD();
+                    } else {
                       writeByteToUART('1');
-                      readContinuousStream();
+                      readContinuousStream(false);
                     }
                    } else writeByteToUART('0');
                    break;
+
+        // Command "F" Read data continuously from the drive until a byte is sent from the PC higher accuracy flux.  
+        case 'F':  if (driveEnabled) {
+                    if(disktypeHD) {
+                      writeByteToUART('0');   
+                    } else {
+                      writeByteToUART('1');
+                      readContinuousStream(true);
+                    }
+                   } else writeByteToUART('0');
+                   break;                   
 
         // Command "}" Write track to the drive with precomp
         case '}': if (!driveEnabled) writeByteToUART('0'); else {                 
@@ -1551,18 +2457,20 @@ void loop() {
         // Command "<" Read track from the drive
         case '<': if(!driveEnabled) writeByteToUART('0'); 
                   else {
-                     writeByteToUART('1');
                      if(disktypeHD)
-                        readTrackDataFast_HD();
-                     else
+                         writeByteToUART('0');      // Not supported.  Use read contineous stream
+                     else {
+                        writeByteToUART('1');
                         readTrackDataFast();
+                     }
                    }
                    break;
   
         // Command ">" Write track to the drive 
         case '>': if (!driveEnabled) writeByteToUART('0'); else {                     
                      if(disktypeHD) {
-                        writeByteToUART('0');                      
+                        writeByteToUART('1');       
+                        writeTrackFromUART_HD();               
                      } else {
                         writeByteToUART('1');
                         writeTrackFromUART();
@@ -1626,6 +2534,9 @@ void loop() {
                          
         case '&': runDiagnostic();
                   break;
+
+        case 'E': readEpromValue(); break;
+        case 'e': writeEpromValue(); break;
     
       // We don't recognise the command!
       default:

@@ -4,7 +4,6 @@
 Created by Robert Smith @RobSmithDev
 https://amiga.robsmithdev.co.uk
 
-
 # What is it?
 This project uses an Arduino to interface with a floppy disk drive and 
 communicate with a PC in order to recover the data from any formatted 
@@ -29,22 +28,6 @@ formatted DD floppy disks.
 Using the supplied makefile you should be able to **compile this on Linux**.  It has
 been tested with Raspberry Pi OS (Raspbian - Debian-based)
 
-# Scripts for linux
-The above application apparently works under WINE, however,
-Github user "kollokollo" made some scripts for reading other formats on Linux 
-too as follows:
-	The ATARI ST and DOS/PC floppy formats can be decoded whit these scripts.
-	9,10,11 or 18 Sectors per track. Up to 82 tracks, DD (ca. 800 kBytes) or 
-	HD (1.4 MBytes). The images usually contain a FAT12 file system which can be 
-	directly mounted by linux without any additional driver.   
-	For more information see 
-		https://github.com/kollokollo/ArduinoFloppyDiskReader/tree/new/for_linux
-		They need the X11-Basic interpreter from http://x11-basic.sourceforge.net/
-
-# Commodore 1581 Disks
-	To read commodore 1581 disks, check out the project at: 
-		https://github.com/hpingel/pyAccess1581
-
 # FloppyDriverController.sketch
 This is the Arduino source code/sketch for all Floppy formats.
 * Detect disk density (SD/DD or HD)
@@ -56,11 +39,6 @@ This is the Arduino source code/sketch for all Floppy formats.
 * read raw track data (its, RAW, so FM, MFM; SD, DD or HD)
 * write track data (in DD woth precompensation and HD)
 * Evaulate drive quality
-
-# AVR Firmware
-If you want to use the AVR directly instead of within the Arduino environment, 
-then jump to [https://github.com/jtsiomb/usbamigafloppy] where John Tsiombikas 
-has ported the code.
 
 # Help and Instructions 
 For further details including how to wire this up please visit 
@@ -104,6 +82,28 @@ For further details including how to wire this up please visit
 * V2.1  Diagnostics and potential write bug fixed
 * V2.0  Disk reading has been vastly improved and you can now also write disks!
 * V1.0  Initial release, can read disks fairly well
+
+# Scripts for linux
+The above application apparently works under WINE, however,
+Github user "kollokollo" made some scripts for reading other formats on Linux 
+too as follows:
+	The ATARI ST and DOS/PC floppy formats can be decoded whit these scripts.
+	9,10,11 or 18 Sectors per track. Up to 82 tracks, DD (ca. 800 kBytes) or 
+	HD (1.4 MBytes). The images usually contain a FAT12 file system which can be 
+	directly mounted by linux without any additional driver.   
+	For more information see 
+		https://github.com/kollokollo/ArduinoFloppyDiskReader/tree/new/for_linux
+		They need the X11-Basic interpreter from http://x11-basic.sourceforge.net/
+
+# Commodore 1581 Disks
+	To read commodore 1581 disks, check out the project at: 
+		https://github.com/hpingel/pyAccess1581
+
+# AVR Firmware
+If you want to use the AVR directly instead of within the Arduino environment, 
+then jump to [https://github.com/jtsiomb/usbamigafloppy] where John Tsiombikas 
+has ported the code.
+
 
 # Licence
 This entire project is available under the GNU General Public License v3
