@@ -1,4 +1,4 @@
-# Arduino Powered Floppy Disk Reader and Writer
+# DrawBridge aka Arduino Powered Floppy Disk Reader and Writer
 ...with 3rd party interfaces for Amiga, ATARI ST and DOS/PC Disk formats 
 
 Created by Robert Smith @RobSmithDev
@@ -54,7 +54,8 @@ This is the Arduino source code/sketch for all Floppy formats.
 * read write protection status
 * Read index pulse
 * read raw track data (its, RAW, so FM, MFM; SD, DD or HD)
-* write track data (un-buffered, DD, untested HD) with precompensation
+* write track data (in DD woth precompensation and HD)
+* Evaulate drive quality
 
 # AVR Firmware
 If you want to use the AVR directly instead of within the Arduino environment, 
@@ -66,7 +67,27 @@ For further details including how to wire this up please visit
 [https://amiga.robsmithdev.co.uk]
 
 # Whats changed?
-* v2.5 (firmware 1.8a) - Add support for 'noclick'
+* v2.7  Firmware 1.9.15 (see sketch notes)
+	Added support for reading and writing HD Amiga floppy disks
+	Added 'auto-detect' HD floppy disk inserted
+	Fixed race condition with aborting reading
+	Overhalled the UI to make it much cleaner
+        Automatic update check (this is done in a way that is 100% private, there is no way I will ever know you checked for update)
+	Slightly updated logo
+	New EEPROM options to control how DrawBridge behaves
+	Massively improved diagnostics:
+		Can now detect DrawBridge vs DrawBridge Plus
+		Fixed issue with read diagnostics
+		Can detect the RPM of the drive for faults
+		Will perform diagnostics for DD and HD
+		Lists enabled and supported features of your DrawBridge setup
+	Added optional support for direct access via the FTDI driver instead of COM ports
+	Added ability to perform erase cycles before writing to a disk
+	Added option for ADFs to be written index aligned
+	Improved accuracy for *UAE disk reading	and writing
+* v2.6  (firmware 1.8a) - Add support for 'noclick'
+        Fixed issue with SCP/ADF file extension being incorrect if you change the type after choosing the filename
+	Added some more tests during diagnostics
 * v2.5  A whole load of changes including:
         Fixed an encoding issue which prevented disks being read under Kickstart 1.3 or lower.
 		Added support for read "streaming" with index sync support        
