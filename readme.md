@@ -9,7 +9,8 @@ This project uses an Arduino to interface with a floppy disk drive and
 communicate with a PC in order to recover the data from any formatted 
 disks. This includes Windows software to copy from and to ADF files.
 
-This project is what is behind getting real floppy disks loading in real time into emulators like WinUAE and Amiberry
+This project is what is behind getting real floppy disks loading in real time into emulators 
+like WinUAE and Amiberry
 
 # Formats
 The Arduino firmware allows to read the raw MFM data from each track of the
@@ -34,13 +35,13 @@ This is the Arduino source code/sketch for all Floppy formats.
 * Seek to any track (up to 82 - be careful, this can damage some drives!)
 * read write protection status
 * Read index pulse
-* read raw track data (its, RAW, so FM, MFM; SD, DD or HD)
-* write track data (in DD woth precompensation and HD)
+* read raw track data (its RAW, so FM, MFM; SD, DD or HD)
+* write track data (in DD with precompensation and HD)
 * Evaulate drive quality
 
 # Help and Instructions 
 For further details including how to wire this up please visit 
-[https://amiga.robsmithdev.co.uk]
+[https://amiga.robsmithdev.co.uk] or join the discussion on discord at [https://discord.gg/HctVgSFEXu]
 
 # Whats changed?
 * v2.7  Firmware 1.9.15 (see sketch notes)
