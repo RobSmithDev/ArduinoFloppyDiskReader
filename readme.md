@@ -9,9 +9,7 @@ This project uses an Arduino to interface with a floppy disk drive and
 communicate with a PC in order to recover the data from any formatted 
 disks. This includes Windows software to copy from and to ADF files.
 
-# WinUAE
-This release added support for WinUAE, and hopefully could be ported to other
-UAE's in the future.
+This project is what is behind getting real floppy disks loading in real time into emulators like WinUAE and Amiberry
 
 # Formats
 The Arduino firmware allows to read the raw MFM data from each track of the
