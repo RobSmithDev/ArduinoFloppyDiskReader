@@ -24,7 +24,7 @@
  *******************************************************************************************************************
  *******************************************************************************************************************/
  
-/* Latest History: Last Modified: 21/10/2021
+/* Latest History: Last Modified: 31/10/2021
     Firmware V1.4: Merged with Pull Request #6 (Modified the behavior of the current track location on Arduino boot - paulofduarte) which also addresses issues with some drives
     Firmware V1.5: Merged with Pull Request #9 (Detect and read out HD floppy disks 1.44M by kollokollo)
     Firmware V1.6: Added experimental unbuffered writing HD disk support
@@ -61,6 +61,8 @@
               v1.9.13 Halloween Edition. Small change to delay function to speed up drive stepping
               v1.9.14 Much faster seek times, makes it sound like a PC drive, but we want speed right?
               v1.9.15 Added a 'reset' function
+              v1.9.16 Put the buffering back into the DD write function to support some of the dodgy FTDI devices
+              v1.9.17 Added buffering to the HD write function to support some of the dodgy FTDI devices
 */    
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -201,6 +203,15 @@ bool disktypeHD = 0;
 #define PLL_HD_START_VALUE   -8
 // Center position reading HD disks in DB classic mode (this is TIMING_OVERHEAD+DB_CLASSIC_HD_MIDDLE) - this was checked to give the best result with jitter
 #define DB_CLASSIC_HD_MIDDLE -2
+
+
+
+
+// 256 byte circular buffer - don't change this, we abuse the unsigned char to overflow back to zero!
+#define SERIAL_BUFFER_SIZE 256
+#define SERIAL_BUFFER_START (SERIAL_BUFFER_SIZE - 16)
+// Only used here
+unsigned char SERIAL_BUFFER[SERIAL_BUFFER_SIZE];
 
 #include <EEPROM.h>
 #include <avr/wdt.h>
@@ -756,14 +767,16 @@ void checkWriteProtectStatus() {
 
 
 // This runs the PWM for writing a single pulse
-#define RUN_PULSE_DD()                                                                               \
-        if ((!nextByteAvailable) && (UCSR0A & bit(RXC0))) {                                          \
-           PIN_CTS_PORT|=PIN_CTS_MASK;                                                               \
-           nextByte = UDR0, nextByteAvailable = true;                                                \
-        }                                                                                            \
-        while (!(TIFR2 &  bit(TOV2))) {};                                                            \
-        OCR2A = counter;    /* reset to zero when we get to counter */                               \
-        OCR2B = pulseStart;                                                                          \
+#define RUN_PULSE_DD()                                                                                 \
+        while (!(TIFR2 &  bit(TOV2))) {                                                                \
+          if (UCSR0A & bit(RXC0)) {                                                                    \
+             PIN_CTS_PORT|=PIN_CTS_MASK;                                                               \
+             SERIAL_BUFFER[serialWritePos++] = UDR0;                                                   \
+             serialBytesInUse++;                                                                       \
+          }                                                                                            \
+        };                                                                                             \
+        OCR2A = counter;    /* reset to zero when we get to counter */                                 \
+        OCR2B = pulseStart;                                                                            \
         TIFR2 |= bit(TOV2);        
 
 // Write a track to disk from the UART - This works like the precomp version as the old method isn't fast enough.  This version is 100% jitter free
@@ -780,15 +793,23 @@ void writePrecompTrack() {
     unsigned char waitForIndex = readByteFromUART();
     unsigned short numBytes = (((unsigned short)highByte)<<8) | lowByte;
     
-    digitalWrite(PIN_ACTIVITY_LED,HIGH);
+    unsigned char serialReadPos = 0;
+    unsigned char serialWritePos = SERIAL_BUFFER_START;
+    unsigned char serialBytesInUse = SERIAL_BUFFER_START;
     
     writeByteToUART('!');     
+    digitalWrite(PIN_ACTIVITY_LED,HIGH);
+    register unsigned char currentByte = readByteFromUART();
+
+    // Fill our buffer to give us a head start
+    for (int a=0; a<SERIAL_BUFFER_START; a++) {
+        // Wait for it
+        while (!( UCSR0A & ( 1 << RXC0 ))){}; 
+        // Save the byte
+        SERIAL_BUFFER[a] = UDR0;
+    }  
 
     numBytes--;
-
-    register unsigned char currentByte = readByteFromUART();
-    register unsigned char nextByte = 0;
-    register bool nextByteAvailable = false;
 
     PIN_CTS_PORT|=PIN_CTS_MASK;                // stop any more data coming in!
 
@@ -819,9 +840,9 @@ void writePrecompTrack() {
         if (currentByte & 0x04) pulseStart-=2;    // Pulse should be early, so just move the pulse start back
         if (currentByte & 0x08) pulseStart+=2;    // Pulse should be late, so move the pulse start forward
         
-        PIN_CTS_PORT &= (~PIN_CTS_MASK);
         RUN_PULSE_DD();
-
+        if (serialBytesInUse<SERIAL_BUFFER_START) PIN_CTS_PORT &= (~PIN_CTS_MASK); else PIN_CTS_PORT|=PIN_CTS_MASK;    
+              
         numBytes--;
         // Check for overflow errors
         if (UCSR0A & (bit(FE0)|bit(DOR0))) break;
@@ -833,9 +854,10 @@ void writePrecompTrack() {
         if (currentByte & 0x80) pulseStart+=2;    // Pulse should be late, so move the pulse start forward
         RUN_PULSE_DD();
 
-        if (!nextByteAvailable) break;
-        currentByte = nextByte;
-        nextByteAvailable = false;
+        if (!serialBytesInUse) break;
+        
+        currentByte = SERIAL_BUFFER[serialReadPos++]; 
+        serialBytesInUse--;
     } while (numBytes);    
 
     PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;
@@ -865,11 +887,6 @@ void writePrecompTrack() {
 }
 
 
-
-// 256 byte circular buffer - don't change this, we abuse the unsigned char to overflow back to zero!
-#define SERIAL_BUFFER_SIZE 256
-#define SERIAL_BUFFER_START (SERIAL_BUFFER_SIZE - 16)
-
 #define CHECK_SERIAL_PART1()    if (UCSR0A & ( 1 << RXC0 )) {                \
                                     SERIAL_BUFFER[serialWritePos++] = UDR0;        \
                                     serialBytesInUse++;                            \
@@ -892,8 +909,7 @@ void writePrecompTrack() {
  
 // Write a track to disk from the UART - the data should be pre-MFM encoded raw track data where '1's are the pulses/phase reversals to trigger - this is old, should use the PRECOMP version now for better quality
 void writeTrackFromUART() {
-    // Only used here
-    unsigned char SERIAL_BUFFER[SERIAL_BUFFER_SIZE];
+
     // Configure timer 2 just as a counter in NORMAL mode
     TCCR2A = 0 ;              // No physical output port pins and normal operation
     TCCR2B = bit(CS20);       // Precale = 1  
@@ -1014,11 +1030,13 @@ void writeTrackFromUART() {
 
 // This runs the PWM for writing a single pulse
 #define RUN_PULSE()                                                                                  \
-        if ((!nextByteAvailable) && (UCSR0A & bit(RXC0))) {                                          \
-           PIN_CTS_PORT|=PIN_CTS_MASK;                                                               \
-           nextByte = UDR0, nextByteAvailable = true;                                                \
-        }                                                                                            \
-        while (!(TIFR2 &  bit(TOV2)));                                                               \
+        while (!(TIFR2 &  bit(TOV2))) {                                                                \
+          if (UCSR0A & bit(RXC0)) {                                                                    \
+             PIN_CTS_PORT|=PIN_CTS_MASK;                                                               \
+             SERIAL_BUFFER[serialWritePos++] = UDR0;                                                   \
+             serialBytesInUse++;                                                                       \
+          }                                                                                            \
+        };                                                                                            \
         OCR2A = counter;    /* reset to zero when we get to counter */                               \
         OCR2B = counter-2;                                                                           \
         TIFR2 |= bit(TOV2);        
@@ -1040,8 +1058,18 @@ void writeTrackFromUART_HD() {
     writeByteToUART('!');     
 
     register unsigned char currentByte = readByteFromUART();
-    register unsigned char nextByte = 0;
-    register bool nextByteAvailable = false;
+    
+    // Fill our buffer to give us a head start
+    for (int a=0; a<SERIAL_BUFFER_START; a++) {
+        // Wait for it
+        while (!( UCSR0A & ( 1 << RXC0 ))){}; 
+        // Save the byte
+        SERIAL_BUFFER[a] = UDR0;
+    }  
+
+    unsigned char serialReadPos = 0;
+    unsigned char serialWritePos = SERIAL_BUFFER_START;
+    unsigned char serialBytesInUse = SERIAL_BUFFER_START;
 
     PIN_CTS_PORT|=PIN_CTS_MASK;                // stop any more data coming in!
 
@@ -1068,12 +1096,12 @@ void writeTrackFromUART_HD() {
     do {
         // Group 1
         register unsigned char counter = 15 + (currentByte&B00110000);
-        PIN_CTS_PORT &= (~PIN_CTS_MASK);
         RUN_PULSE();
                 
         // Group 2
         counter = 15 + ((currentByte&B00001100)*4);
         RUN_PULSE();
+        if (serialBytesInUse<SERIAL_BUFFER_START) PIN_CTS_PORT &= (~PIN_CTS_MASK); else PIN_CTS_PORT|=PIN_CTS_MASK;    
 
         // Group 3
         counter = 15 + ((currentByte&B00000011) * 16);
@@ -1086,9 +1114,10 @@ void writeTrackFromUART_HD() {
         counter = 15 + ((currentByte&B11000000)/4);
         RUN_PULSE();
 
-        if (!nextByteAvailable) break;
-        currentByte = nextByte;
-        nextByteAvailable = false;
+        if (!serialBytesInUse) break;        
+        currentByte = SERIAL_BUFFER[serialReadPos++]; 
+        serialBytesInUse--;
+        
     } while (currentByte);    
 
     PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;
@@ -2385,7 +2414,7 @@ void loop() {
                                   (slowerDiskSeeking ? FLAGS_SLOWSEEKING_MODE : 0)  
                                   );
                   writeByteToUART(0);  // RFU
-                  writeByteToUART(15);  // build number
+                  writeByteToUART(17);  // build number
                   break;
   
         // Command "." means go back to track 0
