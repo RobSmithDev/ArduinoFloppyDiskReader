@@ -44,7 +44,7 @@
 #define RAW_TRACKDATA_LENGTH_DD (0x1900*2+0x440)
 #define RAW_TRACKDATA_LENGTH_HD (2*RAW_TRACKDATA_LENGTH_DD)
 // With the disk spinning at 300rpm, and data rate of 500kbps, for a full revolution we should receive 12500 bytes of data (12.5k)
-// The above buffer assumes a full Paula data capture plsu the size of a sector.
+// The above buffer assumes a full Paula data capture plus the size of a sector.
 
 
 #define FLAGS_HIGH_PRECISION_SUPPORT   (1 << 0)
@@ -206,13 +206,13 @@ namespace ArduinoFloppyReader {
 		const LastCommand getLastFailedCommand() const { return m_lastCommand; };
 		const DiagnosticResponse getLastError() const { return m_lastError; };
 
-		// Uses the above fields to constructr a suitable error message, hopefully useful in diagnosing the issue
+		// Uses the above fields to constructor a suitable error message, hopefully useful in diagnosing the issue
 		const std::string getLastErrorStr() const;
 
 		const bool isOpen() const { return m_comPort.isPortOpen(); };
 		const bool isInWriteMode() const { return m_inWriteMode; };
 
-		// Returns a list of ports this coudl be available on
+		// Returns a list of ports this could be available on
 		static void enumeratePorts(std::vector<std::wstring>& portList);
 
 		// Returns TRUE if there is a disk in the drive.   This is ONLY updated by checkForDisk or checkIfDiskIsWriteProtected
@@ -239,14 +239,14 @@ namespace ArduinoFloppyReader {
 		// Seek to track 0
 		DiagnosticResponse findTrack0();
 
-		// Check to see if a disk is inserted in the drive. If forceCheck then the last cached verson is returned, which is also updated by diskStepOnce.
+		// Check to see if a disk is inserted in the drive. If forceCheck then the last cached version is returned, which is also updated by diskStepOnce.
 		DiagnosticResponse checkForDisk(bool forceCheck);
 
-		// Reads a complete rotation of the disk, and returns it using the callback function whcih can return FALSE to stop
+		// Reads a complete rotation of the disk, and returns it using the callback function which can return FALSE to stop
 		// An instance of RotationExtractor is required.  This is purely to save on re-allocations.  It is internally reset each time
 		DiagnosticResponse readRotation(RotationExtractor& extractor, const unsigned int maxOutputSize, RotationExtractor::MFMSample* firstOutputBuffer, RotationExtractor::IndexSequenceMarker& startBitPatterns, std::function<bool(RotationExtractor::MFMSample** mfmData, const unsigned int dataLengthInBits)> onRotation);
 
-		// Stops the read streamming immediately and any data in the buffer will be discarded. The above function will exit when the Arduino has also stopped streaming data
+		// Stops the read streaming immediately and any data in the buffer will be discarded. The above function will exit when the Arduino has also stopped streaming data
 		bool abortReadStreaming();
 
 		// Returns TURE if the disk si currently streaming data

@@ -57,7 +57,7 @@ using namespace ArduinoFloppyReader;
 #define COMMAND_SWITCHTO_DD		   'D'   // Requires Firmware V1.6
 #define COMMAND_SWITCHTO_HD		   'H'   // Requires Firmware V1.6
 
-// New commands for more direct control of the drive.  Some of these are more efficient or dont turn the disk motor on for modded hardware
+// New commands for more direct control of the drive.  Some of these are more efficient or don't turn the disk motor on for modded hardware
 #define COMMAND_READTRACKSTREAM    '{'    // Requires Firmware V1.8
 #define COMMAND_WRITETRACKPRECOMP  '}'    // Requires Firmware V1.8
 #define COMMAND_CHECKDISKEXISTS    '^'    // Requires Firmware V1.8 (and modded hardware for fast version)
@@ -104,7 +104,7 @@ std::string lastCommandToName(LastCommand cmd) {
 	}
 }
 
-// Uses the above fields to constructr a suitable error message, hopefully useful in diagnosing the issue
+// Uses the above fields to constructor a suitable error message, hopefully useful in diagnosing the issue
 const std::string ArduinoInterface::getLastErrorStr() const {
 	std::stringstream tmp;
 	switch (m_lastError) {
@@ -413,7 +413,7 @@ DiagnosticResponse ArduinoInterface::attemptToSync(std::string& versionString, S
 				port.closePort();
 				return DiagnosticResponse::drErrorReadingVersion;
 			}
-			if (((counterNoData % 10) == 9) && (bytesRead == 0)) {
+			if (((counterNoData % 7) == 6) && (bytesRead == 0)) {
 				// Give it a kick
 				buffer[0] = COMMAND_VERSION;
 				size = port.write(&buffer[0], 1);
@@ -494,7 +494,7 @@ DiagnosticResponse ArduinoInterface::openPort(const std::wstring& portName, bool
 	// it's possible theres still redundant data in the buffer
 	char buffer[2];
 	int counter = 0;
-	for (;;) {
+	while (m_comPort.getBytesWaiting()) {
 		unsigned long size = m_comPort.read(buffer, 1);
 		if (size < 1)
 			if (counter++ >= 5) break;
@@ -1327,7 +1327,7 @@ DiagnosticResponse ArduinoInterface::readRotation(RotationExtractor& extractor, 
 	}
 }
 
-// Stops the read streamming immediately and any data in the buffer will be discarded.
+// Stops the read streaming immediately and any data in the buffer will be discarded.
 bool ArduinoInterface::abortReadStreaming() {
 	if ((m_version.major == 1) && (m_version.minor < 8)) {
 		return false;
@@ -1504,7 +1504,7 @@ DiagnosticResponse ArduinoInterface::writeCurrentTrackPrecomp(const unsigned cha
 	unsigned char* output = outputBuffer;
 	int lastCount = 2;
 
-	// Re-encode the data into our format and apply precomp.  The +8 is to ensure theres some padding around the edge which will come out as 010101 etc
+	// Re-encode the data into our format and apply precomp.  The +8 is to ensure there's some padding around the edge which will come out as 010101 etc
 	while (pos < numBytes) {
 		*output = 0;
 
@@ -1602,7 +1602,7 @@ DiagnosticResponse ArduinoInterface::internalWriteTrack(const unsigned char* dat
 		return m_lastError;
 	}
 
-	// HD doesnt need the length as the data is null terminated
+	// HD doesn't need the length as the data is null terminated
 	if (!m_isHDMode) {
 		// Now we send the number of bytes we're planning on transmitting
 		unsigned char b = (numBytes >> 8);
@@ -1663,7 +1663,7 @@ DiagnosticResponse ArduinoInterface::internalWriteTrack(const unsigned char* dat
 	return m_lastError;
 }
 
-// Returns a list of ports this coudl be available on
+// Returns a list of ports this could be available on
 void ArduinoInterface::enumeratePorts(std::vector<std::wstring>& portList) {
 	portList.clear();
 	std::vector<SerialIO::SerialPortInformation> prts;

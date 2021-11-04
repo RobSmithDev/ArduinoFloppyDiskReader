@@ -445,7 +445,7 @@ SerialIO::Response SerialIO::openPort(const std::wstring& portName) {
 	}
 #endif
 
-#ifdef _WIN32
+#ifdef _WIN32	
 	std::wstring path = L"\\\\.\\" + portName;
 	m_portHandle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, 0);
 	if (m_portHandle == INVALID_HANDLE_VALUE) {
@@ -455,6 +455,7 @@ SerialIO::Response SerialIO::openPort(const std::wstring& portName) {
 		default: return Response::rUnknownError;
 		}
 	}
+
 	updateTimeouts();
 	return Response::rOK;
 #else
@@ -776,7 +777,7 @@ unsigned int SerialIO::write(const void* data, unsigned int dataLength) {
 
 // Attempts to read some data from the port.  Returns how much it actually read.
 // If readAll is TRUE then it will wait until all data has been read or an error occurs
-// Returns how mcuh it actually read
+// Returns how much it actually read
 unsigned int SerialIO::read(void* data, unsigned int dataLength) {
 	if ((data == nullptr) || (dataLength == 0)) return 0;
 	if (!isPortOpen()) return 0;
