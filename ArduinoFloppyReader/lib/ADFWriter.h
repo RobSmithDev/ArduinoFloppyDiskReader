@@ -97,6 +97,12 @@ namespace ArduinoFloppyReader {
 		// Close the device when we've finished
 		void closeDevice();
 
+		// Check if the inserted disk is Write Protected.  Returns TRUE if it is
+		bool WriteProtected();
+
+		// Check if a disk is inserted.  Returns TRUE if it is
+		bool DiskPresent();
+
 		// Get the current firmware version.  Only valid if openDevice is successful
 		const FirmwareVersion getFirwareVersion() const;
 

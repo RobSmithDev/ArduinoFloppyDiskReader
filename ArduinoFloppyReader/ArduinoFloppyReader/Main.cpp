@@ -24,6 +24,7 @@
 
 #include "ADFWriter.h"
 #include "ArduinoInterface.h"
+#include "BulkWriter.h"
 #ifdef _WIN32
 #include <conio.h>
 #else
@@ -80,6 +81,7 @@ std::wstring atw(const std::string& str) {
 using namespace ArduinoFloppyReader;
 
 ADFWriter writer;
+BulkWriter bulkWriter;
 
 // Settings type
 struct SettingName {
@@ -377,6 +379,8 @@ int main(int argc, char* argv[], char *envp[])
 		printf("ArduinoFloppyReader <COMPORT> OutputFilename.SCP [READ]\r\n\r\n");
 		printf("To write an ADF file to disk:\r\n");
 		printf("ArduinoFloppyReader <COMPORT> InputFilename.ADF WRITE [VERIFY]\r\n\r\n");
+		printf("To write all ADF files in a folder to disk to disk:\r\n");
+		printf("ArduinoFloppyReader <COMPORT> foldername WRITEDIRECTORY [VERIFY]\r\n\r\n");
 		printf("To start interface diagnostics:\r\n");
 		printf("ArduinoFloppyReader <COMPORT> DIAGNOSTIC\r\n\r\n");
 		printf("To see the current EEPROM Ssettings:\r\n");
@@ -433,28 +437,46 @@ int main(int argc, char* argv[], char *envp[])
 	
 #ifdef _WIN32	
 	bool writeMode = (argc > 3) && (iequals(argv[3], L"WRITE"));
+	bool writeDirectoryMode = (argc > 3) && (iequals(argv[3], L"WRITEDIRECTORY"));
 	bool verify = (argc > 4) && (iequals(argv[4], L"VERIFY"));
 	if (argc >= 2) {
 		std::wstring port = argv[1];
 		std::wstring filename = argv[2];
 #else
 	bool writeMode = (argc > 3) && (iequals(argv[3], "WRITE"));
+	bool writeDirectoryMode = (argc > 3) && (iequals(argv[3], "WRITEDIRECTORY"));
 	bool verify = (argc > 4) && (iequals(argv[4], "VERIFY"));
 	if (argc >= 2) {
 		std::wstring filename = atw(argv[2]);
 #endif
 		if (iequals(filename, L"DIAGNOSTIC")) {
-			runDiagnostics(port);
-		} else
-		if (!writer.openDevice(port)) {
-			printf("\rError opening COM port: %s  ", writer.getLastError().c_str());
+		    runDiagnostics(port);
 		}
-		else {
-			if (writeMode) adf2Disk(filename.c_str(), verify); else disk2ADF(filename.c_str());
-			writer.closeDevice();
-		}
+		else
+		    if (writeDirectoryMode)
+		    {
+			   bulkWriter.writeDirectory(port.c_str(), filename.c_str(), false, verify);
+		    }
+		    else
+		    {
+			   if (!writer.openDevice(port)) {
+				  printf("\rError opening COM port: %s  ", writer.getLastError().c_str());
+			   }
+			   else {
+				  if (writeMode)
+				  {
+					 adf2Disk(filename.c_str(), verify);
+				  }
+				  else
+				  {
+					 disk2ADF(filename.c_str());
+				  }
+			   }
+			   writer.closeDevice();
+		    }
+
 	}
-	
+
 	printf("\r\n\r\n");
 	
     return 0;

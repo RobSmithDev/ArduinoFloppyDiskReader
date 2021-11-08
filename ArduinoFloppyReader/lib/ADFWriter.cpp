@@ -549,6 +549,30 @@ void ADFWriter::closeDevice() {
 	m_device.closePort();
 }
 
+bool ADFWriter::WriteProtected()
+{
+    if (m_device.checkIfDiskIsWriteProtected(true) == DiagnosticResponse::drWriteProtected)
+    {
+	   return true;
+    }
+    else
+    {
+	   return false;
+    }
+}
+
+bool ADFWriter::DiskPresent()
+{
+    if (m_device.checkForDisk(true) == DiagnosticResponse::drNoDiskInDrive)
+    {
+	   return false;
+    }
+    else
+    {
+	   return true;
+    }
+}
+
 // Run diagnostics on the system.  You do not need to call openDevice first.  Return TRUE if everything passed
 bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(bool isError, const std::string message)> messageOutput, std::function<bool(bool isQuestion, const std::string question)> askQuestion) {
 	std::stringstream msg;
