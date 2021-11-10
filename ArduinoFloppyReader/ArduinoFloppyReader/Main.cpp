@@ -40,6 +40,10 @@ void _wcsupr(wchar_t* str) {
 	}
 }
 #endif
+
+#ifndef _termios
+#define _termios
+
 static struct termios old, current;
 
 /* Initialize new terminal i/o settings */
@@ -76,6 +80,9 @@ std::wstring atw(const std::string& str) {
 	ws.resize(::mbstowcs((wchar_t*)ws.data(), str.c_str(), str.size())); 
 	return ws;
 }
+
+#endif
+
 #endif
 
 using namespace ArduinoFloppyReader;
@@ -456,6 +463,7 @@ int main(int argc, char* argv[], char *envp[])
 		    if (writeDirectoryMode)
 		    {
 			   bulkWriter.writeDirectory(port.c_str(), filename.c_str(), false, verify);
+			   //bulkWriter.writeDirectory();
 		    }
 		    else
 		    {
