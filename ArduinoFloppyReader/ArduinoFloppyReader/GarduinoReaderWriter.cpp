@@ -44,6 +44,10 @@ public:
             partialCount->set_text(Glib::ustring::sprintf("%i", badSectorsFound));
             sideLabel->set_text(side);
 
+            while (Gtk::Main::events_pending())
+            {
+                Gtk::Main::iteration();
+            }
             if (retryCounter > 20)
             {
                 if (alwaysIgnore->get_active())
@@ -85,6 +89,11 @@ public:
                                             });
         copyButton->signal_clicked().connect([this, readerCallback]()
                                              {
+                                                 copyButton->set_sensitive(false);
+                                                 while (Gtk::Main::events_pending())
+                                                 {
+                                                     Gtk::Main::iteration();
+                                                 }
                                                  Glib::ustring folder = folderButton->get_filename();
                                                  Glib::ustring filename = folder + "/" + fileEntry->get_buffer()->get_text();
                                                  ArduinoFloppyReader::ADFWriter writer;
@@ -102,6 +111,7 @@ public:
                                                  }
                                                  // Handle the result
                                                  handleResult(writer, readerResult);
+                                                 copyButton->set_sensitive(true);
                                              });
 
         writeFolderSelector->signal_file_set().connect([this]()
@@ -147,6 +157,11 @@ public:
         };
         writeButton->signal_clicked().connect([this, writerCallback]()
                                               {
+                                                  writeButton->set_sensitive(false);
+                                                  while (Gtk::Main::events_pending())
+                                                  {
+                                                      Gtk::Main::iteration();
+                                                  }
                                                   Glib::ustring filename = writeFolderSelector->get_filename();
                                                   ArduinoFloppyReader::ADFWriter writer;
                                                   Glib::ustring serial = portsCombo->get_active_text();
@@ -155,6 +170,7 @@ public:
                                                   readerResult = writer.ADFToDisk(std::wstring(filename.begin(), filename.end()), verify->get_active(), writeCompensation->get_active(), writerCallback);
                                                   // Handle the result
                                                   handleResult(writer, readerResult);
+                                                  writeButton->set_sensitive(true);
                                               });
     }
 
