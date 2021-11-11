@@ -26,7 +26,7 @@ protected:
 public:
 	CStatic m_version;
 
-    BOOL CAboutDlg::OnInitDialog()
+    BOOL OnInitDialog()
     {
         CDialogEx::OnInitDialog();
 
