@@ -68,48 +68,73 @@ std::wstring BulkWriter::atw(const std::string& str) {
 using namespace ArduinoFloppyReader;
 
 // Read an ADF file and write it to disk
- int BulkWriter::adf2Disk(const std::wstring& filename, const bool inHDMode, bool verify) {
-     printf("\nWrite disk from ADF mode\n\n");
-     if (!verify) printf("WARNING: It is STRONGLY recommended to write with verify support turned on.\r\n\r\n");
+int BulkWriter::adf2Disk(const std::wstring& filename, bool verify) {
+	printf("\nWrite disk from ADF mode\n\n");
+	if (!verify) printf("WARNING: It is STRONGLY recommended to write with verify support turned on.\r\n\r\n");
 
-     ADFResult result = m_adfWriter.ADFToDisk(filename, inHDMode, verify, true, false, true, [&](const int currentTrack, const DiskSurface currentSide, bool isVerifyError, const CallbackOperation operation) ->WriteResponse {
- 	   if (isVerifyError) {
- 		  char input;
- 		  do {
- 			 printf("\rDisk write verify error on track %i, %s side. [R]etry, [S]kip, [A]bort?                                   ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
- #ifdef _WIN32
- 			 input = toupper(_getch());
- #else
- 			 input = toupper(_getChar());
- #endif	
- 		  } while ((input != 'R') && (input != 'S') && (input != 'A'));
+	bool hdMode = false;
 
- 		  switch (input) {
- 		  case 'R': return WriteResponse::wrRetry;
- 		  case 'I': return WriteResponse::wrSkipBadChecksums;
- 		  case 'A': return WriteResponse::wrAbort;
- 		  }
- 	   }
- 	   printf("\rWriting Track %i, %s side     ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
- #ifndef _WIN32
- 	   fflush(stdout);
- #endif		
- 	   return WriteResponse::wrContinue;
- 	   });
+	// Detect disk speed
+	const ArduinoFloppyReader::FirmwareVersion v = m_adfWriter.getFirwareVersion();
 
-     switch (result) {
-     case ADFResult::adfrComplete:					printf("\rADF file written to disk                                                           "); break;
-     case ADFResult::adfrCompletedWithErrors:		printf("\rADF file written to disk but there were errors during verification                 "); break;
-     case ADFResult::adfrAborted:					printf("\rWriting ADF file to disk                                                           "); break;
-     case ADFResult::adfrFileError:					printf("\rError opening ADF file.                                                            "); break;
-     case ADFResult::adfrDriveError:					printf("\rError communicating with the Arduino interface.                                    ");
- 	   printf("\n%s                                                  ", m_adfWriter.getLastError().c_str()); break;
-     case ADFResult::adfrDiskWriteProtected:			printf("\rError, disk is write protected!                                                    "); break;
-     default:										printf("\rAn unknown error occured                                                           "); break;
-     }
+	if (((v.major == 1) && (v.minor >= 9)) || (v.major > 1)) {
+		if (m_adfWriter.GuessDiskDensity(hdMode) != ArduinoFloppyReader::ADFResult::adfrComplete) {
+			printf("Unable to work out the density of the disk inserted.\n");
+			return 1;
+}
+	}
 
-     return 0;
- }
+	ADFResult result = m_adfWriter.ADFToDisk(filename, hdMode, verify, true, false, true, [](const int currentTrack, const DiskSurface currentSide, bool isVerifyError, const CallbackOperation operation) ->WriteResponse {
+		if (isVerifyError) {
+			char input;
+			do {
+				printf("\rDisk write verify error on track %i, %s side. [R]etry, [S]kip, [A]bort?                                   ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
+#ifdef _WIN32
+				input = toupper(_getch());
+#else
+				input = toupper(_getChar());
+#endif	
+			} while ((input != 'R') && (input != 'S') && (input != 'A'));
+
+			switch (input) {
+			case 'R': return WriteResponse::wrRetry;
+			case 'I': return WriteResponse::wrSkipBadChecksums;
+			case 'A': return WriteResponse::wrAbort;
+			}
+		}
+		printf("\rWriting Track %i, %s side     ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
+#ifndef _WIN32
+		fflush(stdout);
+#endif		
+		return WriteResponse::wrContinue;
+		});
+
+	switch (result) {
+	case ADFResult::adfrComplete:					printf("\rADF file written to disk                                                           "); break;
+	case ArduinoFloppyReader::ADFResult::adfrExtendedADFNotSupported:	printf("\rExtended ADF files are not currently supported.                                    "); break;
+	case ArduinoFloppyReader::ADFResult::adfrMediaSizeMismatch:			if (hdMode)
+		printf("\rDisk in drive was detected as HD, but a DD ADF file supplied.                      "); else
+		printf("\rDisk in drive was detected as DD, but an HD ADF file supplied.                     ");
+		break;
+	case ADFResult::adfrFirmwareTooOld:             printf("\rCannot write this file, you need to upgrade the firmware first.                    "); break;
+	case ADFResult::adfrCompletedWithErrors:		printf("\rADF file written to disk but there were errors during verification                 "); break;
+	case ADFResult::adfrAborted:					printf("\rWriting ADF file to disk                                                           "); break;
+	case ADFResult::adfrFileError:					printf("\rError opening ADF file.                                                            "); break;
+	case ADFResult::adfrDriveError:					printf("\rError communicating with the Arduino interface.                                    ");
+		printf("\n%s                                                  ", m_adfWriter.getLastError().c_str()); break;
+	case ADFResult::adfrDiskWriteProtected:			printf("\rError, disk is write protected!                                                    "); break;
+	default:										printf("\rAn unknown error occured                                                           "); break;
+	}
+
+	if (result != ADFResult::adfrComplete)
+	{
+		return 1;
+	}
+	else
+	{
+		return 0;
+	}
+}
 
 // Iterate through a directory
 void BulkWriter::writeDirectory(const std::wstring& port, const std::wstring& directory, const bool inHDMode, bool verify) {
@@ -193,7 +218,7 @@ void BulkWriter::writeDirectory(const std::wstring& port, const std::wstring& di
 		  if (entry.exists())
 		  {
 #ifdef _WIN32
-              adf2Disk(entry.path(), inHDMode, verify);
+              adf2Disk(entry.path(), verify);
 #else
               adf2Disk(atw(entry.path()), inHDMode, verify);
 #endif

@@ -11,7 +11,7 @@ public:
 private:
     ArduinoFloppyReader::ADFWriter m_adfWriter;
 
-    int adf2Disk(const std::wstring& filename, const bool inHDMode, bool verify);
+    int adf2Disk(const std::wstring& filename, bool verify);
 
 
 #ifndef _WIN32
