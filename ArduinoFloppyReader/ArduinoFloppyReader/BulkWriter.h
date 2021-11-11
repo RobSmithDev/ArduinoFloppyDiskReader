@@ -1,5 +1,3 @@
-#pragma once
-
 #include "ADFWriter.h"
 
 class BulkWriter
