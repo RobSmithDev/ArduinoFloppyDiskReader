@@ -82,7 +82,7 @@ int BulkWriter::adf2Disk(const std::wstring& filename, bool verify) {
 	//	}
 	//}
 
-	ADFResult result = m_adfWriter.ADFToDisk(filename, hdMode, verify, true, false, true, [&](const int currentTrack, const DiskSurface currentSide, bool isVerifyError, const CallbackOperation operation) ->WriteResponse {
+	ADFResult result = m_adfWriter.ADFToDisk(filename, hdMode, verify, true, false, true, [this](const int currentTrack, const DiskSurface currentSide, bool isVerifyError, const CallbackOperation operation) ->WriteResponse {
 		if (isVerifyError) {
 			char input;
 			do {
