@@ -16,53 +16,12 @@ namespace fs = std::filesystem;
 #include <stdio.h>
 #include <termios.h>
 
-//#ifndef _wcsupr
-//#include <wctype.h>
-//void _wcsupr(wchar_t* str) {
-//    while (*str) {
-//	   *str = towupper(*str);
-//	   str++;
-//    }
-//}
-//#endif
+// Reuse from Main.cpp
+void initTermios(int echo);
+void resetTermios(void);
+char _getChar();
+std::wstring atw(const std::string& str);
 
-static struct termios old, current;
-
-/* Initialize new terminal i/o settings */
-void BulkWriter::initTermios(int echo)
-{
-	tcgetattr(0, &old); /* grab old terminal i/o settings */
-	current = old; /* make new settings same as old settings */
-	current.c_lflag &= ~ICANON; /* disable buffered i/o */
-	if (echo) {
-		current.c_lflag |= ECHO; /* set echo mode */
-	}
-	else {
-		current.c_lflag &= ~ECHO; /* set no echo mode */
-	}
-	tcsetattr(0, TCSANOW, &current); /* use these new terminal i/o settings now */
-}
-
-/* Restore old terminal i/o settings */
-void BulkWriter::resetTermios(void)
-{
-	tcsetattr(0, TCSANOW, &old);
-}
-
-char BulkWriter::_getChar()
-{
-	char ch;
-	initTermios(0);
-	ch = getchar();
-	resetTermios();
-	return ch;
-}
-
-std::wstring BulkWriter::atw(const std::string& str) {
-	std::wstring ws(str.size(), L' ');
-	ws.resize(::mbstowcs((wchar_t*)ws.data(), str.c_str(), str.size()));
-	return ws;
-}
 #endif
 
 using namespace ArduinoFloppyReader;
