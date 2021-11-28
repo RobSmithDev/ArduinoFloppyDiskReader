@@ -108,7 +108,7 @@ int BulkWriter::adf2Disk(const std::wstring& filename, bool verify) {
 		});
 
 	switch (result) {
-	case ADFResult::adfrComplete:					
+	case ADFResult::adfrComplete:
 		//printf("\rADF file written to disk                                                           "); 
 		break;
 	case ArduinoFloppyReader::ADFResult::adfrExtendedADFNotSupported:	printf("\rExtended ADF files are not currently supported.                                    "); break;
@@ -147,20 +147,29 @@ void BulkWriter::writeDirectory(const std::wstring& port, const std::wstring& di
 		return;
 	}
 
+	// Check if there are .adf files in the folder.
+	std::vector<fs::directory_entry> listOfAdfs;
+
+	auto directoryIterator = fs::directory_iterator(directory);
+
+	for (const auto& entry : directoryIterator)
+	{
+		if (entry.is_regular_file() && entry.path().extension() == adfExtension)
+		{
+			listOfAdfs.push_back(entry);
+		}
+	}
+
 	if (!m_adfWriter.openDevice(port)) {
 		printf("\rError opening COM port: %s  ", m_adfWriter.getLastError().c_str());
 		return;
 	}
 
-
 	bool isFirstDisk = true;
 
-	auto iterator = fs::directory_iterator(directory);
+	std::wcout << "Writing " << listOfAdfs.size() << " adf files in folder : " << directory << std::endl << std::endl;
 
-	std::wcout << "Writing all adf files in folder: " << directory << std::endl << std::endl;
-
-
-	for (const auto& entry : iterator)
+	for (const auto& entry : listOfAdfs)
 	{
 		if (!isFirstDisk)
 		{
@@ -201,7 +210,7 @@ void BulkWriter::writeDirectory(const std::wstring& port, const std::wstring& di
 				{
 					if (!writeProtectWarningGiven)
 					{
-						std::cout << "\rDisk is write protected, insert not write protected disk.         " ;
+						std::cout << "\rDisk is write protected, insert not write protected disk.         ";
 						writeProtectWarningGiven = true;
 					}
 				}
@@ -220,9 +229,9 @@ void BulkWriter::writeDirectory(const std::wstring& port, const std::wstring& di
 
 				do {
 #ifdef _WIN32
-				int result = adf2Disk(entry.path(), verify);
+					int result = adf2Disk(entry.path(), verify);
 #else
-				int result = adf2Disk(atw(entry.path()), verify);
+					int result = adf2Disk(atw(entry.path()), verify);
 #endif
 					if (result)
 					{
@@ -248,22 +257,22 @@ void BulkWriter::writeDirectory(const std::wstring& port, const std::wstring& di
 							m_adfWriter.closeDevice();
 							return;
 						}
-					}
+						}
 					else
 					{
 						writtenSuccesfullyOrAborted = true;
 					}
 
-				} while (!writtenSuccesfullyOrAborted);
-			}
+					} while (!writtenSuccesfullyOrAborted);
+				}
 			else
 			{
 				std::cout << "Error opening " << entry.path().filename() << std::endl;
 			}
+			}
 		}
-	}
 
 	//TODO: add some better handling for this => possibly opening and closing for every disk.
 	m_adfWriter.closeDevice();
 
-}
+	}
