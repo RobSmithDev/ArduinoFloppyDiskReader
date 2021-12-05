@@ -78,7 +78,8 @@ namespace ArduinoFloppyReader {
 							coRetryReading,
 							coRetryWriting,
 							coReVerifying,
-							coReadingFile
+							coReadingFile,
+							coErasing
 						};
 
 	// Main writer class

@@ -1500,6 +1500,12 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring& inputFile, bool mediaIsHD, bo
 		int failCount = 0;
 		while (trackRead.validSectors.size()< maxSectorsPerTrack) {
 
+			if (callback)
+				if (callback(currentTrack, surface, false, CallbackOperation::coErasing) == WriteResponse::wrAbort) {
+					hADFFile.close();
+					return ADFResult::adfrAborted;
+				}
+
 			if (eraseFirst) {
 				// Run the erase cycle twice
 				m_device.eraseCurrentTrack();

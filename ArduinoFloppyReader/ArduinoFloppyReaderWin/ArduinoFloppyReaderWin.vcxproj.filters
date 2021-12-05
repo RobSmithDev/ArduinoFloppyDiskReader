@@ -69,6 +69,9 @@
     <ClInclude Include="CRunningDlg.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="TColorText.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ArduinoFloppyReaderWin.cpp">
@@ -105,6 +108,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="CCompleteDialog.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="TColorText.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

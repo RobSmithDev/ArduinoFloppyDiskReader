@@ -8,6 +8,7 @@
 #include <functional>
 #include "../lib/ArduinoInterface.h"
 #include "../lib/ADFWriter.h"
+#include "TColorText.h"
 
 // CRunningDlg dialog
 
@@ -40,6 +41,7 @@ protected:
 
 	DECLARE_MESSAGE_MAP()
 	virtual BOOL OnInitDialog();
+	void DrawDiskGrid();
 	virtual BOOL PreTranslateMessage(MSG* pMsg);
 	afx_msg void OnSysCommand(UINT nID, LPARAM lParam);
 	afx_msg void OnBnClickedCancel();
@@ -51,7 +53,13 @@ protected:
 	CStatic m_partial;
 	CStatic m_message;
 	CButton m_cancelbtn;
-	CProgressCtrl m_progress;
+	TColorText m_lowerSide[82];
+	TColorText m_upperSide[82];
+
+	TColorText m_lowerSideHeaderTop[10];
+	TColorText m_lowerSideHeaderLeft[9];
+	TColorText m_upperSideHeaderTop[10];
+	TColorText m_upperSideHeaderLeft[9];
 
 public:
 	void setCylinder(int cylinder) { m_cylinder.SetWindowTextW(std::to_wstring(cylinder).c_str()); };
@@ -63,6 +71,7 @@ public:
 	void setOperation(ArduinoFloppyReader::CallbackOperation op);
 	void setProgress(int position);
 	bool wasAbortPressed() const { return m_abortPressed; };
+	void updateDiskGrid(ArduinoFloppyReader::CallbackOperation op, int currentCylinder, ArduinoFloppyReader::DiskSurface currentSide, bool isverifyError);
 protected:
 	afx_msg LRESULT OnUser(WPARAM wParam, LPARAM lParam);
 public:

@@ -15,7 +15,7 @@ IMPLEMENT_DYNAMIC(CRunningDlg, CDialogEx)
 CRunningDlg::CRunningDlg(const std::wstring windowTitle, std::function<void(CRunningDlg* dlg)> onRun, CWnd* pParent /*=nullptr*/)
 	: CDialogEx(IDD_RUNNING, pParent), m_onRun(onRun), m_title(windowTitle)
 {
-	
+
 }
 
 CRunningDlg::~CRunningDlg()
@@ -35,7 +35,6 @@ void CRunningDlg::DoDataExchange(CDataExchange* pDX)
 	DDX_Control(pDX, IDC_GOODSECTORS, m_good);
 	DDX_Control(pDX, IDC_BADSECTORS, m_partial);
 	DDX_Control(pDX, IDC_MESSAGE, m_message);
-	DDX_Control(pDX, IDC_PROGRESS, m_progress);
 	DDX_Control(pDX, IDCANCEL, m_cancelbtn);
 	DDX_Control(pDX, IDC_MESSAGE2, m_operation);
 }
@@ -47,34 +46,67 @@ BEGIN_MESSAGE_MAP(CRunningDlg, CDialogEx)
 	ON_MESSAGE(WM_USER, &CRunningDlg::OnUser)
 END_MESSAGE_MAP()
 
-void CRunningDlg::resetProgress(int max) { 
-	m_progress.SetPos(0); 
-	m_progress.SetRange(0, max); 
+void CRunningDlg::resetProgress(int max) {
 	m_maxValue = max;
 	m_stateNeedsToChange = true;
 	if (m_spTaskbarList) m_spTaskbarList->SetProgressState(GetSafeHwnd(), TBPF_INDETERMINATE);
 };
 
-void CRunningDlg::setProgress(int position) { 
-	m_progress.SetPos(position); 
+void CRunningDlg::setProgress(int position) {
 	if (m_stateNeedsToChange) {
 		m_stateNeedsToChange = false;
 		if (m_spTaskbarList) m_spTaskbarList->SetProgressState(GetSafeHwnd(), TBPF_NORMAL);
 	}
 	if (m_spTaskbarList) m_spTaskbarList->SetProgressValue(GetSafeHwnd(), position, m_maxValue);
-};
+}
+
+void CRunningDlg::updateDiskGrid(ArduinoFloppyReader::CallbackOperation op, int currentCylinder, ArduinoFloppyReader::DiskSurface currentSide, bool isverifyError)
+{
+	COLORREF colorToUse;
+
+	switch (op) {
+		case ArduinoFloppyReader::CallbackOperation::coStarting: return; break;
+		case ArduinoFloppyReader::CallbackOperation::coReadingFile: return; break;
+		case ArduinoFloppyReader::CallbackOperation::coReading: colorToUse = RGB(0, 128, 0); break;
+		case ArduinoFloppyReader::CallbackOperation::coWriting: colorToUse = RGB(255, 255, 0); break;
+		case ArduinoFloppyReader::CallbackOperation::coVerifying: colorToUse = RGB(0, 128, 0); break;
+		case ArduinoFloppyReader::CallbackOperation::coErasing: colorToUse = RGB(100, 100, 255); break;
+		case ArduinoFloppyReader::CallbackOperation::coRetryReading: colorToUse = RGB(0, 128, 0); break;
+		case ArduinoFloppyReader::CallbackOperation::coRetryWriting: colorToUse = RGB(255, 255, 0); break;
+		case ArduinoFloppyReader::CallbackOperation::coReVerifying: colorToUse = RGB(0, 128, 0); break;
+	}
+
+	if (isverifyError)
+	{
+		colorToUse = RGB(255, 0, 0);
+	}
+
+	if (currentSide == ArduinoFloppyReader::DiskSurface::dsLower)
+	{
+		m_lowerSide[currentCylinder].SetTextColor(colorToUse);
+		m_lowerSide[currentCylinder].SetWindowTextW(_T("O"));
+	}
+	else
+	{
+		m_upperSide[currentCylinder].SetTextColor(colorToUse);
+		m_upperSide[currentCylinder].SetWindowTextW(_T("O"));
+	}
+
+}
+
 
 void CRunningDlg::setOperation(ArduinoFloppyReader::CallbackOperation op) {
 	switch (op) {
-	case ArduinoFloppyReader::CallbackOperation::coStarting : m_operation.SetWindowTextW(L"Preparing Interface..."); break;
-	case ArduinoFloppyReader::CallbackOperation::coReading : m_operation.SetWindowTextW(L"Reading cylinder..."); break;
-	case ArduinoFloppyReader::CallbackOperation::coWriting : m_operation.SetWindowTextW(L"Writing cylinder..."); break;
-	case ArduinoFloppyReader::CallbackOperation::coVerifying : m_operation.SetWindowTextW(L"Verifying cylinder..."); break;
-	case ArduinoFloppyReader::CallbackOperation::coRetryReading : m_operation.SetWindowTextW(L"Re-reading cylinder..."); break;
-	case ArduinoFloppyReader::CallbackOperation::coRetryWriting : m_operation.SetWindowTextW(L"Re-writing cylinder..."); break;
+	case ArduinoFloppyReader::CallbackOperation::coStarting: m_operation.SetWindowTextW(L"Preparing Interface..."); break;
+	case ArduinoFloppyReader::CallbackOperation::coReading: m_operation.SetWindowTextW(L"Reading cylinder..."); break;
+	case ArduinoFloppyReader::CallbackOperation::coWriting: m_operation.SetWindowTextW(L"Writing cylinder..."); break;
+	case ArduinoFloppyReader::CallbackOperation::coVerifying: m_operation.SetWindowTextW(L"Verifying cylinder..."); break;
+	case ArduinoFloppyReader::CallbackOperation::coRetryReading: m_operation.SetWindowTextW(L"Re-reading cylinder..."); break;
+	case ArduinoFloppyReader::CallbackOperation::coRetryWriting: m_operation.SetWindowTextW(L"Re-writing cylinder..."); break;
 	case ArduinoFloppyReader::CallbackOperation::coReVerifying: m_operation.SetWindowTextW(L"Re-verifying cylinder..."); break;
 	case ArduinoFloppyReader::CallbackOperation::coReadingFile: m_operation.SetWindowTextW(L"Reading file..."); break;
-		
+	case ArduinoFloppyReader::CallbackOperation::coErasing: m_operation.SetWindowTextW(L"Erasing cylinder..."); break;
+
 	}
 }
 
@@ -92,6 +124,7 @@ BOOL CRunningDlg::OnInitDialog()
 	}
 	else m_spTaskbarList = nullptr;
 
+	DrawDiskGrid();
 
 	// Main processing thread
 	m_iothread = new std::thread([this]()->void {
@@ -102,10 +135,11 @@ BOOL CRunningDlg::OnInitDialog()
 		m_threadRunning = false;
 
 		PostMessage(WM_USER, 0, 0);
-	});
+		});
 
-	return TRUE;  
+	return TRUE;
 }
+
 
 
 BOOL CRunningDlg::PreTranslateMessage(MSG* pMsg)
@@ -150,4 +184,105 @@ afx_msg LRESULT CRunningDlg::OnUser(WPARAM wParam, LPARAM lParam)
 {
 	CDialogEx::OnCancel();
 	return 0;
+}
+
+
+CRect CalculateCRect(int startX, int startY, int sizeX, int sizeY, int headerOffSetX, int headerOffSetY, int x, int y, bool isHeader, bool isTopHeader)
+{
+	if (isHeader)
+		if (isTopHeader)
+			return CRect(headerOffSetX + startX + x * sizeX, startY + y * sizeY, headerOffSetX + startX + (x + 1) * sizeX, startY + (y + 1) * sizeY);
+		else
+			return CRect( startX + x * sizeX, headerOffSetY + startY + y * sizeY, startX + (x + 1) * sizeX, headerOffSetY + startY + (y + 1) * sizeY);
+	else
+		return CRect(headerOffSetX + startX + (x * sizeX), headerOffSetY + startY + y * sizeY, headerOffSetX + startX + (x + 1) * sizeX, headerOffSetY + startY + (y + 1) * sizeY);
+}
+
+void CRunningDlg::DrawDiskGrid()
+{
+	int startX, startY, headerOffSetX, headerOffSetY, sizeX, sizeY;
+	startX = 40;
+	startY = 100;
+	headerOffSetX = 15;
+	headerOffSetY = 15;
+	sizeX = 18;
+	sizeY = 18;
+	int nId = 15000;
+
+	DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | SS_CENTERIMAGE | SS_SUNKEN | WS_BORDER | SS_CENTER;
+	DWORD styleHeader = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | SS_CENTERIMAGE | SS_CENTER;
+
+	CString tempString;
+
+	for (int x = 0; x < 10; x++)
+	{
+		tempString.Format(_T("%d"), x);
+
+		m_lowerSideHeaderTop[x].Create(tempString, styleHeader, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, x, 0, true, true), this, nId++);
+		m_lowerSideHeaderTop[x].setTransparent(false);
+	}
+
+	for (int y = 0; y < 9; y++)
+	{
+		tempString.Format(_T("%d"), y);
+
+		m_lowerSideHeaderLeft[y].Create(tempString, styleHeader, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, 0, y, true, false), this, nId++);
+		m_lowerSideHeaderLeft[y].setTransparent(false);
+	}
+
+	for (int y = 0; y < 8; y++)
+	{
+		for (int x = 0; x < 10; x++)
+		{
+			m_lowerSide[x + (y * 10)].Create(_T(""), style, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, x, y, false, false), this, nId++);
+			m_lowerSide[x + (y * 10)].setTransparent(false);
+			m_lowerSide[x + (y * 10)].SetBackgroundColor(RGB(0, 0, 0));
+		}
+	}
+
+	m_lowerSide[80].Create(_T(""), style, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, 0, 8, false, false), this, nId++);
+	m_lowerSide[0 + (8 * 10)].setTransparent(false);
+	m_lowerSide[0 + (8 * 10)].SetBackgroundColor(RGB(0, 0, 0));
+
+	m_lowerSide[81].Create(_T(""), style, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, 1, 8, false, false), this, nId++);
+	m_lowerSide[1 + (8 * 10)].setTransparent(false);
+	m_lowerSide[1 + (8 * 10)].SetBackgroundColor(RGB(0, 0, 0));
+
+	startX = 260;
+	startY = 100;
+
+	for (int x = 0; x < 10; x++)
+	{
+		tempString.Format(_T("%d"), x);
+
+		m_upperSideHeaderTop[x].Create(tempString, styleHeader, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, x, 0, true, true), this, nId++);
+		m_upperSideHeaderTop[x].setTransparent(false);
+	}
+
+	for (int y = 0; y < 9; y++)
+	{
+		tempString.Format(_T("%d"), y);
+
+		m_upperSideHeaderLeft[y].Create(tempString, styleHeader, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, 0, y, true, false), this, nId++);
+		m_upperSideHeaderLeft[y].setTransparent(false);
+	}
+
+	for (int y = 0; y < 8; y++)
+	{
+		for (int x = 0; x < 10; x++)
+		{
+			m_upperSide[x + (y * 10)].Create(_T(""), style, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, x, y, false, false), this, nId++);
+			m_upperSide[x + (y * 10)].setTransparent(false);
+			m_upperSide[x + (y * 10)].SetBackgroundColor(RGB(0, 0, 0));
+		}
+	}
+
+	m_upperSide[80].Create(_T(""), style, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, 0, 8, false, false), this, nId++);
+	m_upperSide[0 + (8 * 10)].setTransparent(false);
+	m_upperSide[0 + (8 * 10)].SetBackgroundColor(RGB(0, 0, 0));
+
+	m_upperSide[81].Create(_T(""), style, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, 1, 8, false, false), this, nId++);
+	m_upperSide[1 + (8 * 10)].setTransparent(false);
+	m_upperSide[1 + (8 * 10)].SetBackgroundColor(RGB(0, 0, 0));
+
 }

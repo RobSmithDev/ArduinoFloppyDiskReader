@@ -356,6 +356,8 @@ void CArduinoFloppyReaderWinDlg::runThreadRead(CRunningDlg* dlg) {
 
 		dlg->setProgress((currentTrack * 2) + ((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper) ? 1 : 0));
 
+		dlg->updateDiskGrid(operation, currentTrack, currentSide, retryCounter > 20);
+
 		if (retryCounter > 20) {
 			switch (MessageBox(L"Disk has checksum errors/missing/damaged data.\r\n\r\n", L"Disk Read Errors", MB_ABORTRETRYIGNORE)) {
 			case IDABORT: return ArduinoFloppyReader::WriteResponse::wrAbort;
@@ -476,6 +478,8 @@ void CArduinoFloppyReaderWinDlg::runThreadWrite(CRunningDlg* dlg) {
 			dlg->setSide(currentSide);
 			dlg->setCylinder(currentTrack);
 			dlg->setProgress((currentTrack * 2) + ((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper) ? 1 : 0));
+
+			dlg->updateDiskGrid(operation, currentTrack, currentSide, isVerifyError);
 
 			if (isVerifyError) {
 				switch (MessageBox(L"Verify error writing track.", L"Disk Write Error", MB_ABORTRETRYIGNORE)) {
