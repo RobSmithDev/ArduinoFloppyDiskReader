@@ -65,15 +65,15 @@ void CRunningDlg::updateDiskGrid(ArduinoFloppyReader::CallbackOperation op, int 
 	COLORREF colorToUse;
 
 	switch (op) {
-		case ArduinoFloppyReader::CallbackOperation::coStarting: return; break;
-		case ArduinoFloppyReader::CallbackOperation::coReadingFile: return; break;
-		case ArduinoFloppyReader::CallbackOperation::coReading: colorToUse = RGB(0, 128, 0); break;
-		case ArduinoFloppyReader::CallbackOperation::coWriting: colorToUse = RGB(255, 255, 0); break;
-		case ArduinoFloppyReader::CallbackOperation::coVerifying: colorToUse = RGB(0, 128, 0); break;
-		case ArduinoFloppyReader::CallbackOperation::coErasing: colorToUse = RGB(100, 100, 255); break;
-		case ArduinoFloppyReader::CallbackOperation::coRetryReading: colorToUse = RGB(0, 128, 0); break;
-		case ArduinoFloppyReader::CallbackOperation::coRetryWriting: colorToUse = RGB(255, 255, 0); break;
-		case ArduinoFloppyReader::CallbackOperation::coReVerifying: colorToUse = RGB(0, 128, 0); break;
+	case ArduinoFloppyReader::CallbackOperation::coStarting: return; break;
+	case ArduinoFloppyReader::CallbackOperation::coReadingFile: return; break;
+	case ArduinoFloppyReader::CallbackOperation::coReading: colorToUse = RGB(0, 128, 0); break;
+	case ArduinoFloppyReader::CallbackOperation::coWriting: colorToUse = RGB(255, 255, 0); break;
+	case ArduinoFloppyReader::CallbackOperation::coVerifying: colorToUse = RGB(0, 128, 0); break;
+	case ArduinoFloppyReader::CallbackOperation::coErasing: colorToUse = RGB(100, 100, 255); break;
+	case ArduinoFloppyReader::CallbackOperation::coRetryReading: colorToUse = RGB(0, 128, 0); break;
+	case ArduinoFloppyReader::CallbackOperation::coRetryWriting: colorToUse = RGB(255, 255, 0); break;
+	case ArduinoFloppyReader::CallbackOperation::coReVerifying: colorToUse = RGB(0, 128, 0); break;
 	}
 
 	if (isverifyError)
@@ -84,12 +84,12 @@ void CRunningDlg::updateDiskGrid(ArduinoFloppyReader::CallbackOperation op, int 
 	if (currentSide == ArduinoFloppyReader::DiskSurface::dsLower)
 	{
 		m_lowerSide[currentCylinder].SetTextColor(colorToUse);
-		m_lowerSide[currentCylinder].SetWindowTextW(_T("O"));
+		m_lowerSide[currentCylinder].SetWindowTextW(_T("0"));
 	}
 	else
 	{
 		m_upperSide[currentCylinder].SetTextColor(colorToUse);
-		m_upperSide[currentCylinder].SetWindowTextW(_T("O"));
+		m_upperSide[currentCylinder].SetWindowTextW(_T("0"));
 	}
 
 }
@@ -193,20 +193,39 @@ CRect CalculateCRect(int startX, int startY, int sizeX, int sizeY, int headerOff
 		if (isTopHeader)
 			return CRect(headerOffSetX + startX + x * sizeX, startY + y * sizeY, headerOffSetX + startX + (x + 1) * sizeX, startY + (y + 1) * sizeY);
 		else
-			return CRect( startX + x * sizeX, headerOffSetY + startY + y * sizeY, startX + (x + 1) * sizeX, headerOffSetY + startY + (y + 1) * sizeY);
+			return CRect(startX + x * sizeX, headerOffSetY + startY + y * sizeY, startX + (x + 1) * sizeX, headerOffSetY + startY + (y + 1) * sizeY);
 	else
 		return CRect(headerOffSetX + startX + (x * sizeX), headerOffSetY + startY + y * sizeY, headerOffSetX + startX + (x + 1) * sizeX, headerOffSetY + startY + (y + 1) * sizeY);
 }
 
 void CRunningDlg::DrawDiskGrid()
 {
+
+	CFont* font = new CFont();
+
+	font->CreateFont(
+		24,                       // nHeight
+		0,                        // nWidth
+		0,                        // nEscapement
+		0,                        // nOrientation
+		FW_BOLD,                // nWeight
+		FALSE,                    // bItalic
+		FALSE,                    // bUnderline
+		0,                        // cStrikeOut
+		ANSI_CHARSET,             // nCharSet
+		OUT_DEFAULT_PRECIS,       // nOutPrecision
+		CLIP_DEFAULT_PRECIS,      // nClipPrecision
+		DEFAULT_QUALITY,          // nQuality
+		DEFAULT_PITCH | FF_SWISS, // nPitchAndFamily
+		_T("Courier"));            // lpszFacename
+
 	int startX, startY, headerOffSetX, headerOffSetY, sizeX, sizeY;
-	startX = 40;
+	startX = 10;
 	startY = 100;
-	headerOffSetX = 15;
-	headerOffSetY = 15;
-	sizeX = 18;
-	sizeY = 18;
+	headerOffSetX = 24;
+	headerOffSetY = 24;
+	sizeX = 24;
+	sizeY = 24;
 	int nId = 15000;
 
 	DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | SS_CENTERIMAGE | SS_SUNKEN | WS_BORDER | SS_CENTER;
@@ -219,7 +238,8 @@ void CRunningDlg::DrawDiskGrid()
 		tempString.Format(_T("%d"), x);
 
 		m_lowerSideHeaderTop[x].Create(tempString, styleHeader, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, x, 0, true, true), this, nId++);
-		m_lowerSideHeaderTop[x].setTransparent(false);
+		m_lowerSideHeaderTop[x].setTransparent(true);
+		m_lowerSideHeaderTop[x].SetFont(font, false);
 	}
 
 	for (int y = 0; y < 9; y++)
@@ -227,7 +247,8 @@ void CRunningDlg::DrawDiskGrid()
 		tempString.Format(_T("%d"), y);
 
 		m_lowerSideHeaderLeft[y].Create(tempString, styleHeader, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, 0, y, true, false), this, nId++);
-		m_lowerSideHeaderLeft[y].setTransparent(false);
+		m_lowerSideHeaderLeft[y].setTransparent(true);
+		m_lowerSideHeaderLeft[y].SetFont(font, false);
 	}
 
 	for (int y = 0; y < 8; y++)
@@ -237,18 +258,22 @@ void CRunningDlg::DrawDiskGrid()
 			m_lowerSide[x + (y * 10)].Create(_T(""), style, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, x, y, false, false), this, nId++);
 			m_lowerSide[x + (y * 10)].setTransparent(false);
 			m_lowerSide[x + (y * 10)].SetBackgroundColor(RGB(0, 0, 0));
+			m_lowerSide[x + (y * 10)].SetTextColor(RGB(255, 0, 0));
+			m_lowerSide[x + (y * 10)].SetFont(font, false);
 		}
 	}
 
 	m_lowerSide[80].Create(_T(""), style, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, 0, 8, false, false), this, nId++);
 	m_lowerSide[0 + (8 * 10)].setTransparent(false);
 	m_lowerSide[0 + (8 * 10)].SetBackgroundColor(RGB(0, 0, 0));
+	m_lowerSide[0 + (8 * 10)].SetFont(font, false);
 
 	m_lowerSide[81].Create(_T(""), style, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, 1, 8, false, false), this, nId++);
 	m_lowerSide[1 + (8 * 10)].setTransparent(false);
 	m_lowerSide[1 + (8 * 10)].SetBackgroundColor(RGB(0, 0, 0));
+	m_lowerSide[1 + (8 * 10)].SetFont(font, false);
 
-	startX = 260;
+	startX = 290;
 	startY = 100;
 
 	for (int x = 0; x < 10; x++)
@@ -256,7 +281,8 @@ void CRunningDlg::DrawDiskGrid()
 		tempString.Format(_T("%d"), x);
 
 		m_upperSideHeaderTop[x].Create(tempString, styleHeader, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, x, 0, true, true), this, nId++);
-		m_upperSideHeaderTop[x].setTransparent(false);
+		m_upperSideHeaderTop[x].setTransparent(true);
+		m_upperSideHeaderTop[x].SetFont(font, false);
 	}
 
 	for (int y = 0; y < 9; y++)
@@ -264,7 +290,8 @@ void CRunningDlg::DrawDiskGrid()
 		tempString.Format(_T("%d"), y);
 
 		m_upperSideHeaderLeft[y].Create(tempString, styleHeader, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, 0, y, true, false), this, nId++);
-		m_upperSideHeaderLeft[y].setTransparent(false);
+		m_upperSideHeaderLeft[y].setTransparent(true);
+		m_upperSideHeaderLeft[y].SetFont(font, false);
 	}
 
 	for (int y = 0; y < 8; y++)
@@ -274,15 +301,17 @@ void CRunningDlg::DrawDiskGrid()
 			m_upperSide[x + (y * 10)].Create(_T(""), style, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, x, y, false, false), this, nId++);
 			m_upperSide[x + (y * 10)].setTransparent(false);
 			m_upperSide[x + (y * 10)].SetBackgroundColor(RGB(0, 0, 0));
+			m_upperSide[x + (y * 10)].SetFont(font, false);
 		}
 	}
 
 	m_upperSide[80].Create(_T(""), style, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, 0, 8, false, false), this, nId++);
 	m_upperSide[0 + (8 * 10)].setTransparent(false);
 	m_upperSide[0 + (8 * 10)].SetBackgroundColor(RGB(0, 0, 0));
+	m_upperSide[0 + (8 * 10)].SetFont(font, false);
 
 	m_upperSide[81].Create(_T(""), style, CalculateCRect(startX, startY, sizeX, sizeY, headerOffSetX, headerOffSetY, 1, 8, false, false), this, nId++);
 	m_upperSide[1 + (8 * 10)].setTransparent(false);
 	m_upperSide[1 + (8 * 10)].SetBackgroundColor(RGB(0, 0, 0));
-
+	m_upperSide[1 + (8 * 10)].SetFont(font, false);
 }
