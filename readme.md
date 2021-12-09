@@ -44,6 +44,14 @@ For further details including how to wire this up please visit
 [https://amiga.robsmithdev.co.uk] or join the discussion on discord at [https://discord.gg/HctVgSFEXu]
 
 # Whats changed?
+* v2.8.4 Support for forcing Index Alignment of all writes, even in emulators (only for use if you know what you are doing)
+         Added a timeout when connecting and syncing with the port
+* v2.8.3 Better handling with the 'gap' or 'splice' within IPF files
+* v2.8.2 Fixed a few more issues with SCP
+         Added experimental support for writing IPF files
+* v2.8.1 Fixed and improved some of the SCP support
+* v2.8  Firmware 1.9.18 (see sketch notes)
+        Added support for writing SCP files back to disk.  If more than one revolution exists in the file, the software will pick the second one.
 * v2.7  Firmware 1.9.15 (see sketch notes)
 	Added support for reading and writing HD Amiga floppy disks
 	Added 'auto-detect' HD floppy disk inserted

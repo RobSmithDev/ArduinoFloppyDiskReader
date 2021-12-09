@@ -24,7 +24,7 @@
  *******************************************************************************************************************
  *******************************************************************************************************************/
  
-/* Latest History: Last Modified: 31/10/2021
+/* Latest History: Last Modified: 23/11/2021
     Firmware V1.4: Merged with Pull Request #6 (Modified the behavior of the current track location on Arduino boot - paulofduarte) which also addresses issues with some drives
     Firmware V1.5: Merged with Pull Request #9 (Detect and read out HD floppy disks 1.44M by kollokollo)
     Firmware V1.6: Added experimental unbuffered writing HD disk support
@@ -63,6 +63,9 @@
               v1.9.15 Added a 'reset' function
               v1.9.16 Put the buffering back into the DD write function to support some of the dodgy FTDI devices
               v1.9.17 Added buffering to the HD write function to support some of the dodgy FTDI devices
+              v1.9.18 Added support for 'flux level' writing at arbitrary intervals and a new Flux Wipe, that doesnt write any transitions and makes the disk unformatted
+              v1.9.19 Added a 'terminate at index' option when writing flux
+              v1.9.20 Added EEPROM setting for 'always index align writes'
 */    
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -155,6 +158,7 @@ bool advancedControllerMode     = false;   // DO NOT CHANGE THIS, its automatica
 bool drawbridgePlusMode         = false;   // DO NOT CHANGE THIS, its automatically set via EEPROM.  See the Windows Tool for more information
 bool disableDensityDetection    = false;   // DO NOT CHANGE THIS, its automatically set vis EEPROM.  See the Windows Tool for more information
 bool slowerDiskSeeking          = false;   // DO NOT CHANGE THIS, its automatically set vis EEPROM.  See the Windows Tool for more information
+bool alwaysIndexAlignWrites     = false;   // DO NOT CHANGE THIS, its automatically set vis EEPROM.  See the Windows Tool for more information
 
 // Paula on the Amiga used to find the SYNC WORDS and then read 0x1900 further WORDS.  
 // A dos track is 11968 bytes in size, theritical revolution is 12800 bytes. 
@@ -376,7 +380,12 @@ void refreshEEPROMSettings() {
 
     EEPROM.get(8, b1);
     EEPROM.get(9, b2);
-    slowerDiskSeeking = (((b1 == 0x53) && (b2 == 0x77)));    
+    slowerDiskSeeking = (((b1 == 0x53) && (b2 == 0x77)));   
+
+    EEPROM.get(10, b1);
+    EEPROM.get(11, b2);
+    alwaysIndexAlignWrites = (((b1 == 0x69) && (b2 == 0x61)));   
+     
 }
 
 // EEPROM access
@@ -821,7 +830,7 @@ void writePrecompTrack() {
     PIN_WRITE_DATA_PORT|=PIN_WRITE_DATA_MASK;
     
     // While the INDEX pin is high wait.  Might as well write from the start of the track
-    if (waitForIndex) 
+    if (waitForIndex || alwaysIndexAlignWrites) 
         while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
 
     PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
@@ -886,8 +895,275 @@ void writePrecompTrack() {
     PIN_CTS_PORT &= (~PIN_CTS_MASK);     
 }
 
+#define FLUX_OFFSET        (42-1)     // The -1 is important as the counters count up to and including the number
+#define FLUX_MULTIPLIER    2
+#define FLUX_NOFLUX_OFFSET 5
+#define FLUX_SPECIAL_CODE_BLANK 30    // This special code causes DB to skip 3125ns of time without a flux transition.
+#define FLUX_SPECIAL_CODE_END   31    // This special code causes the writing to finish
 
-#define CHECK_SERIAL_PART1()    if (UCSR0A & ( 1 << RXC0 )) {                \
+#define prepareFlux(v)                                                        \
+  if (EIFR&bit(INTF0)) {                                                      \
+    PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;                                 \
+    EIFR = bit(INTF0);                                                        \
+    indexTerminated = true;                                                   \
+  }                                                                           \
+  timeValue = v;                                                              \
+  if (timeValue == FLUX_SPECIAL_CODE_END) {                                   \ 
+    while (!(TIFR2 &  bit(TOV2))) {};    /* Wait until the pulse finishes */  \ 
+    completedOK = true;                  /* Set success */                    \ 
+    PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK; /* stop writing */              \
+  }                                                                           \
+                                                                              \
+  if (timeValue == FLUX_SPECIAL_CODE_BLANK) {                                 \ 
+    timeValue = (FLUX_NOFLUX_OFFSET * FLUX_MULTIPLIER) + FLUX_OFFSET;         \
+    osr2b =  0xFF;                                                            \ 
+  } else {                                                                    \
+    timeValue = (timeValue * FLUX_MULTIPLIER) + FLUX_OFFSET;                  \ 
+    osr2b = timeValue - 2;                                                    \
+  }                                                                           \
+                                                                              \
+  while (!(TIFR2 &  bit(TOV2))) { /* Wait for the previous timer */           \ 
+    if (UCSR0A & bit(RXC0)) {     /* Incoming Data */                         \
+      SERIAL_BUFFER[serialWritePos++] = UDR0;                                 \
+      serialBytesInUse++;                                                     \
+      if (serialBytesInUse>=SERIAL_BUFFER_START) PIN_CTS_PORT|=PIN_CTS_MASK;  \ 
+    }                                                                         \
+  };                                                                          \
+  OCR2A = timeValue,                                                          \
+  OCR2B = osr2b,                                                              \
+  TIFR2 |= bit(TOV2);
+
+#define prepareFluxFirstTime(v)                                               \
+  if (v == FLUX_SPECIAL_CODE_BLANK) {                                         \ 
+    timeValue = (FLUX_NOFLUX_OFFSET * FLUX_MULTIPLIER) + FLUX_OFFSET;         \
+    osr2b = 0xFF;                /* never reached, so no pulse generated */   \ 
+  } else {                                                                    \
+    timeValue = (v * FLUX_MULTIPLIER) + FLUX_OFFSET;                          \ 
+    osr2b = timeValue - 2;                                                    \
+  }                                                                           \
+  OCR2A = timeValue;                                                          \
+  OCR2B = osr2b;                                                              \
+  TIFR2 |= bit(TOV2);                                                         \
+  TCNT2 = 0;                                              
+
+#define GetSerialDataWithWait(variable)                                           \
+     if (serialBytesInUse<1) {                                                    \
+        PIN_CTS_PORT&=~PIN_CTS_MASK;                                              \
+        while (!(UCSR0A & bit(RXC0))) {};                                         \
+        PIN_CTS_PORT|=PIN_CTS_MASK;                                               \
+        while (UCSR0A & bit(RXC0)) {                                             \
+          SERIAL_BUFFER[serialWritePos++] = UDR0;                                 \
+          serialBytesInUse++;                                                     \
+        }                                                                         \
+      }                                                                           \
+      serialBytesInUse--;                                                         \
+      variable = SERIAL_BUFFER[serialReadPos++];                                  \
+
+#define breakIfZero(c)                                                            \
+    if ((c) == FLUX_SPECIAL_CODE_END) {                                           \
+      completedOK = true;                                                         \
+      break;                                                                      \
+    }
+
+// Attempt to write a track in 'flux' mode
+void writeFluxTrack() {
+    // Check if its write protected.  
+    if (digitalRead(PIN_WRITE_PROTECTED) == LOW) {
+        writeByteToUART('N'); 
+        return;
+    } else
+    writeByteToUART('Y');
+
+    // Find out the multiplier and offset we need
+    unsigned char flags = readByteFromUART();
+    bool terminateAtIndex = (flags&1) != 0;
+    bool indexTerminated = false;
+    unsigned char firstFlux = readByteFromUART();
+    unsigned char nextFlux;  
+    unsigned char timeValue; 
+    unsigned char osr2b;
+    bool completedOK = false;
+
+    // This is *always* written from INDEX
+    // Fill our boots!
+    for (int a=0; a<SERIAL_BUFFER_START; a++) {
+        // Wait for it
+        while (!( UCSR0A & ( 1 << RXC0 ))){}; 
+        // Save the byte
+        SERIAL_BUFFER[a] = UDR0;
+    }
+
+    // Stop more bytes coming in, although we expect one more
+    PIN_CTS_PORT|=PIN_CTS_MASK; 
+
+    unsigned char serialReadPos = 0;
+    unsigned char serialWritePos = SERIAL_BUFFER_START;
+    unsigned char serialBytesInUse = SERIAL_BUFFER_START;
+
+    // Reset the counter, ready for writing - abuse the Fast PWM to produce the wayforms we need.  All we do is change the value it resets at!
+    TCCR2A = bit(COM2B1) | bit(WGM20) | bit(WGM21);  // (COM2B0|COM2B1) Clear OC2B. on compare match, set OC2B at BOTTOM.  WGM20|WGM21 is Fast PWM. 
+    TCCR2B = 0;
+
+    // Enable writing.  This will start the erase head running
+    PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
+
+    // Setup the first flux, rather than decoding, its not packed in any way
+    prepareFluxFirstTime(firstFlux);
+    digitalWrite(PIN_ACTIVITY_LED,HIGH);
+
+    EICRA = bit(ISC01);       // falling edge of INT0 generates an interrupt, they are turned off, but its an easy way for us to detect a falling edge rather than monitoring a pin
+    EIFR=bit(INTF0);  // clear the register saying it detected an index pulse
+    
+    // Wait for the INDEX pulse
+    while (!(EIFR&bit(INTF0))) {};
+
+    EIFR=bit(INTF0);  // clear the register saying it detected an index pulse
+    if (!terminateAtIndex) EICRA = 0;   // disable if we're not using terminate at index
+
+    // Start the counter
+    TCCR2B = bit(WGM22)| bit(CS20);                  // WGM22 enables waveform generation.  CS20 starts the counter running at maximum speed
+
+    /*
+     * Data is in the following layout, this means to read any 5-bits we only need to perform at most, a bit-test, a SWAP, AND and an OR:
+     *     Bit:  7   6   5   4   3   2   1   0  variable
+     * Byte 1 : D4  C4  B4  A4  A3  A2  A1  A0  first
+     * Byte 2 : C3  C2  C1  C0  B3  B2  B1  B0  next
+     * Byte 3 : E3  E2  E1  E0  D3  D2  D1  D0  next
+     * Byte 4 : E4  H4  G4  F4  F3  F2  F1  F0  first
+     * Byte 5 : H3  H2  H1  H0  G3  G2  G1  G0  next
+     */
+
+    
+    // and write it
+    do {
+
+       // Read in byte 1 of 5
+       if (!serialBytesInUse) break; 
+       firstFlux = SERIAL_BUFFER[serialReadPos++], serialBytesInUse--;
+
+       // Calculate 
+       prepareFlux(firstFlux & B00011111);                                          // A
+
+       // Read in byte 2 of 5
+       if (!serialBytesInUse) break; 
+       nextFlux = SERIAL_BUFFER[serialReadPos++], serialBytesInUse--;
+
+       // Second pulse
+       prepareFlux(((firstFlux & B00100000)?B00010000:0) | (nextFlux & 0x0F));      // B
+
+       // Handle overflow errors
+       if (UCSR0A & (bit(FE0)|bit(DOR0))) break;
+       // Re-enable reading
+       if (serialBytesInUse<SERIAL_BUFFER_START) PIN_CTS_PORT&=~PIN_CTS_MASK; 
+
+       // Third Pulse
+       prepareFlux(((firstFlux & B01000000)?B00010000:0) | (nextFlux >> 4));        // C - the >>4 will be a SWAP + AND operation
+
+        // Read in byte 3 of 5
+       if (!serialBytesInUse) break; 
+       nextFlux = SERIAL_BUFFER[serialReadPos++], serialBytesInUse--;
+
+       // Forth pulse
+       prepareFlux(((firstFlux & B10000000)?B00010000:0) | (nextFlux & 0x0F));      // D     
+
+       // Read in byte 4 of 5
+       if (!serialBytesInUse) break; 
+       firstFlux = SERIAL_BUFFER[serialReadPos++], serialBytesInUse--;
+
+       // Fifth Pulse
+       prepareFlux(((firstFlux & B10000000)?B00010000:0) | (nextFlux >> 4));        // E - the >>4 will be a SWAP + AND operation
+
+       // Re-enable reading
+       if (serialBytesInUse<SERIAL_BUFFER_START) PIN_CTS_PORT&=~PIN_CTS_MASK; 
+
+       // Sixth Pulse
+       prepareFlux(firstFlux & B00011111);                                          // F
+
+       // Read in byte 5 of 5
+       if (!serialBytesInUse) break; 
+       nextFlux = SERIAL_BUFFER[serialReadPos++], serialBytesInUse--;       
+
+       // Seventh Pulse
+       prepareFlux(((firstFlux & B00100000)?B00010000:0) | (nextFlux & 0x0F));         // G     
+
+       // Re-enable reading
+       if (serialBytesInUse<SERIAL_BUFFER_START) PIN_CTS_PORT&=~PIN_CTS_MASK; 
+
+       // Eighth  Pulse
+       prepareFlux(((firstFlux & B01000000)?B00010000:0) | (nextFlux >> 4));           // H
+    } while (!completedOK);
+    
+    // Disable write gate!
+    PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;
+    // Turn off the write head
+    PIN_WRITE_DATA_PORT|=PIN_WRITE_DATA_MASK;    
+    TCCR2A = 0;              // disable and reset everything
+    TCCR2B = 0;              // Stop timer 2 
+
+    // Check what happened
+    if (!completedOK) {
+        if (UCSR0A & bit(FE0)) {
+           writeByteToUART('Y');   // Serial Framing Error
+        } else
+        if (UCSR0A & bit(DOR0)) {
+            writeByteToUART('Z');   // Serial IO overrun
+        } else {
+            writeByteToUART('X');   // Serial data not received quickly enough
+        }
+    } else {
+      // Done!
+      if (indexTerminated) writeByteToUART('I'); else writeByteToUART('1');      
+    }
+
+    EICRA = 0;
+    digitalWrite(PIN_ACTIVITY_LED,LOW);
+    PIN_CTS_PORT &= (~PIN_CTS_MASK);
+}
+
+
+// Lets the disk rotate while no flux transitions are written.  Creates a totally unformatted disk
+void fluxWipe() {    
+    // Check if its write protected.  
+    if (digitalRead(PIN_WRITE_PROTECTED) == LOW) {
+        writeByteToUART('N'); 
+        return;
+    } else writeByteToUART('Y');
+    
+    digitalWrite(PIN_ACTIVITY_LED,HIGH);
+   
+    // Enable writing
+    PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
+
+    // To write the 01010101 sequence we're going to ask the Arduino to generate this from its PWM output.
+    TCCR2A = bit(WGM20) | bit(WGM21);       // WGM20|WGM21 is Fast PWM. 
+    TCCR2B = bit(WGM22)| bit(CS20);         // WGM22 enables waveform generation.  CS20 starts the counter runing at maximum speed
+    OCR2A = 63;                         
+    OCR2B = 47;                         
+    TCNT2=0;  
+
+    // Now just count how many times this happens.  Approx 200ms is a revolution, so we'll go 200ms + 5% to be on the safe side (210ms)
+    TIFR2 |= bit(TOV2);
+
+    // 52500 is 210 / 0.004
+    for (unsigned int counter=0; counter<52500; counter++) {
+      // Every time this loop completes, 4us have passed.
+      while (!(TIFR2 & bit(TOV2))) {};
+      TIFR2 |= bit(TOV2);        
+    };
+
+    // Turn off the write head to stop writing instantly
+    PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK;
+
+    TCCR2A = 0;
+    TCCR2B = 0;   // No Clock (turn off)    
+  
+    // Done!
+    writeByteToUART('1');
+    digitalWrite(PIN_ACTIVITY_LED,LOW);
+}
+
+
+#define CHECK_SERIAL_PART1()    if (UCSR0A & ( 1 << RXC0 )) {                      \
                                     SERIAL_BUFFER[serialWritePos++] = UDR0;        \
                                     serialBytesInUse++;                            \
                                 }                                                  
@@ -910,19 +1186,19 @@ void writePrecompTrack() {
 // Write a track to disk from the UART - the data should be pre-MFM encoded raw track data where '1's are the pulses/phase reversals to trigger - this is old, should use the PRECOMP version now for better quality
 void writeTrackFromUART() {
 
-    // Configure timer 2 just as a counter in NORMAL mode
-    TCCR2A = 0 ;              // No physical output port pins and normal operation
-    TCCR2B = bit(CS20);       // Precale = 1  
-    OCR2A = 0x00;
-    OCR2B = 0x00;
-    
-    // Check if its write protected.  You can only do this after the write gate has been pulled low
+    // Check if its write protected. 
     if (digitalRead(PIN_WRITE_PROTECTED) == LOW) {
         writeByteToUART('N'); 
         return;
     } else
     writeByteToUART('Y');
 
+    // Configure timer 2 just as a counter in NORMAL mode
+    TCCR2A = 0 ;              // No physical output port pins and normal operation
+    TCCR2B = bit(CS20);       // Precale = 1  
+    OCR2A = 0x00;
+    OCR2B = 0x00;
+    
     // Find out how many bytes they want to send
     unsigned char highByte = readByteFromUART();
     unsigned char lowByte = readByteFromUART();
@@ -958,7 +1234,7 @@ void writeTrackFromUART() {
     PIN_WRITE_DATA_PORT|=PIN_WRITE_DATA_MASK;
 
     // While the INDEX pin is high wait.  Might as well write from the start of the track
-    if (waitForIndex) 
+    if (waitForIndex || alwaysIndexAlignWrites) 
         while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
     PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
 
@@ -1044,7 +1320,7 @@ void writeTrackFromUART() {
 // Write a track to disk from the UART - the data should be pre-MFM encoded raw track data where '1's are the pulses/phase reversals to trigger  - This works like the precomp version as the old method isn;t fast enough
 // This is 100% jitter free!
 void writeTrackFromUART_HD() {
-    // Check if its write protected.  You can only do this after the write gate has been pulled low
+    // Check if its write protected.  
     if (digitalRead(PIN_WRITE_PROTECTED) == LOW) {
         writeByteToUART('N'); 
         return;
@@ -1081,7 +1357,7 @@ void writeTrackFromUART_HD() {
     PIN_WRITE_DATA_PORT|=PIN_WRITE_DATA_MASK;
     
     // While the INDEX pin is high wait.  Might as well write from the start of the track
-    if (waitForIndex) 
+    if (waitForIndex || alwaysIndexAlignWrites) 
         while (PIN_INDEX_PORT & PIN_INDEX_MASK)  {};
 
     PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
@@ -1148,7 +1424,7 @@ void writeTrackFromUART_HD() {
 
 // Write blank data to a disk so that no MFM track could be detected 
 void eraseTrack() {    
-    // Check if its write protected.  You can only do this after the write gate has been pulled low
+    // Check if its write protected.  
     if (digitalRead(PIN_WRITE_PROTECTED) == LOW) {
         writeByteToUART('N'); 
         return;
@@ -1190,7 +1466,7 @@ void eraseTrack() {
 
 // Write blank data to a disk so that no MFM track could be detected
 void eraseTrack_HD() {
-    // Check if its write protected.  You can only do this after the write gate has been pulled low
+    // Check if its write protected.  
     if (digitalRead(PIN_WRITE_PROTECTED) == LOW) {
         writeByteToUART('N'); 
         return;
@@ -2370,7 +2646,8 @@ void doReset() {
 #define FLAGS_DRAWBRIDGE_PLUSMODE      B00000100     // Is this a Drawbridge Plus board
 #define FLAGS_DENSITYDETECT_ENABLED    B00001000     // Is high denstiy detection disabled? (if so its always reported as double density)
 #define FLAGS_SLOWSEEKING_MODE         B00010000     // If slow seeking is enabled
-#define FLAGS_FIRMWARE_BETA            B10000000     // Is this beta firmware?
+#define FLAGS_INDEX_ALIGN_MODE         B00100000     // Is INDEX ALIGN always enabled?
+#define FLAGS_FIRMWARE_BETA            B10000001     // Is this beta firmware?
 
 // The main command loop
 void loop() { 
@@ -2411,10 +2688,11 @@ void loop() {
                                   (drawbridgePlusMode ? FLAGS_DRAWBRIDGE_PLUSMODE : 0) | 
                                   (advancedControllerMode ? FLAGS_DISKCHANGE_SUPPORT : 0) | 
                                   (disableDensityDetection ? 0 : FLAGS_DENSITYDETECT_ENABLED) |
-                                  (slowerDiskSeeking ? FLAGS_SLOWSEEKING_MODE : 0)  
+                                  (slowerDiskSeeking ? FLAGS_SLOWSEEKING_MODE : 0)  |
+                                  (alwaysIndexAlignWrites ? FLAGS_INDEX_ALIGN_MODE : 0)  
                                   );
                   writeByteToUART(0);  // RFU
-                  writeByteToUART(17);  // build number
+                  writeByteToUART(20);  // build number
                   break;
   
         // Command "." means go back to track 0
@@ -2459,6 +2737,19 @@ void loop() {
                       readContinuousStream(false);
                     }
                    } else writeByteToUART('0');
+                   break;
+
+        // Command "W" Write flux data
+        case 'W': if (!driveEnabled) writeByteToUART('0'); else {     
+                     writeByteToUART('1');                     
+                     writeFluxTrack();
+                   }
+                   break;    
+        // Command "w" is Flux Wipe
+        case 'w': if (!driveEnabled) writeByteToUART('0'); else {     
+                     writeByteToUART('1');            
+                     fluxWipe();
+                   }
                    break;
 
         // Command "F" Read data continuously from the drive until a byte is sent from the PC higher accuracy flux.  
