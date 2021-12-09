@@ -442,6 +442,9 @@ void CArduinoFloppyReaderWinDlg::runThreadWrite(CRunningDlg* dlg) {
 		return;
 	}
 
+	bool isSCPFile = m_writePage->isSCPFile();
+	bool isIPFFile = m_writePage->isIPFFile();
+
 	// Analysis was complete and found some data.  Run the reader	
 	const unsigned int lastTrack = 80;
 	dlg->resetProgress(lastTrack * 2);
@@ -451,48 +454,110 @@ void CArduinoFloppyReaderWinDlg::runThreadWrite(CRunningDlg* dlg) {
 	// Detect disk speed
 	const ArduinoFloppyReader::FirmwareVersion v = writer.getFirwareVersion();
 
+	if ((isSCPFile) && (m_mediadensity.GetCurSel() == 2)) {
+		MessageBox(L"SCP writing is only supported for DD media.", L"Error", MB_OK | MB_ICONEXCLAMATION);
+		return;
+	}
+
+	if ((isIPFFile) && (m_mediadensity.GetCurSel() == 2)) {
+		MessageBox(L"IPF writing is only supported for DD media.", L"Error", MB_OK | MB_ICONEXCLAMATION);
+		return;
+	}
+
 	if (m_mediadensity.GetCurSel() == 0) {
-		if (((v.major == 1) && (v.minor >= 9)) || (v.major > 1)) {
-			dlg->setStatus(L"Checking disk density...");
-			if (writer.GuessDiskDensity(hdMode) != ArduinoFloppyReader::ADFResult::adfrComplete) {
-				MessageBox(L"Unable to work out the density of the disk inserted.", L"Error", MB_OK | MB_ICONEXCLAMATION);
-				return;
+		if ((!isSCPFile) && (!isIPFFile)) {
+			if (((v.major == 1) && (v.minor >= 9)) || (v.major > 1)) {
+				dlg->setStatus(L"Checking disk density...");
+				if (writer.GuessDiskDensity(hdMode) != ArduinoFloppyReader::ADFResult::adfrComplete) {
+					MessageBox(L"Unable to work out the density of the disk inserted.", L"Error", MB_OK | MB_ICONEXCLAMATION);
+					return;
+				}
 			}
 		}
 	}
-	else hdMode = m_mediadensity.GetCurSel() == 2;	
+	else hdMode = m_mediadensity.GetCurSel() == 2;
 
-	if (hdMode) dlg->setStatus(L"Writing ADF file to HD disk..."); else dlg->setStatus(L"Writing ADF file to DD disk...");
+	if (isIPFFile) {
+		dlg->setStatus(L"Writing IPF file to disk...");
+	}
+	else
+	if (isSCPFile) {
+		dlg->setStatus(L"Writing SCP file to disk..."); 
+	}
+	else {
+		if (hdMode) dlg->setStatus(L"Writing ADF file to HD disk..."); else dlg->setStatus(L"Writing ADF file to DD disk...");
+	}
 
-	ArduinoFloppyReader::ADFResult readerResult = writer.ADFToDisk(m_writePage->getFilename(), hdMode, m_writePage->isVerify(), m_writePage->isPrecomp(), m_writePage->isErase(), m_writePage->isIndex(),
-		[this, dlg](const int currentTrack, const ArduinoFloppyReader::DiskSurface currentSide, const bool isVerifyError, ArduinoFloppyReader::CallbackOperation operation) -> ArduinoFloppyReader::WriteResponse {
+	ArduinoFloppyReader::ADFResult readerResult;
 
-			if (dlg->wasAbortPressed()) return ArduinoFloppyReader::WriteResponse::wrAbort;
+	if (isIPFFile) {
+		readerResult = writer.IPFToDisk(m_writePage->getFilename(), m_writePage->isErase(),
+			[this, dlg](const int currentTrack, const ArduinoFloppyReader::DiskSurface currentSide, const bool isVerifyError, ArduinoFloppyReader::CallbackOperation operation) -> ArduinoFloppyReader::WriteResponse {
 
-			dlg->setOperation(operation);
+				if (dlg->wasAbortPressed()) return ArduinoFloppyReader::WriteResponse::wrAbort;
 
-			CString str;
-			str.Format(L"%i", currentTrack);
-			dlg->setSide(currentSide);
-			dlg->setCylinder(currentTrack);
-			dlg->setProgress((currentTrack * 2) + ((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper) ? 1 : 0));
+				dlg->setOperation(operation);
 
-			if (isVerifyError) {
-				switch (MessageBox(L"Verify error writing track.", L"Disk Write Error", MB_ABORTRETRYIGNORE)) {
-				case IDABORT: return ArduinoFloppyReader::WriteResponse::wrAbort;
-				case IDRETRY: return ArduinoFloppyReader::WriteResponse::wrRetry;
-				case IDIGNORE: return ArduinoFloppyReader::WriteResponse::wrSkipBadChecksums;
+				CString str;
+				str.Format(L"%i", currentTrack);
+				dlg->setSide(currentSide);
+				dlg->setCylinder(currentTrack);
+				dlg->setProgress((currentTrack * 2) + ((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper) ? 1 : 0));
+
+				// Just continue
+				return ArduinoFloppyReader::WriteResponse::wrContinue;
+			});
+	} else
+	if (isSCPFile) {
+		readerResult = writer.SCPToDisk( m_writePage->getFilename(), m_writePage->isErase(),
+			[this, dlg](const int currentTrack, const ArduinoFloppyReader::DiskSurface currentSide, const bool isVerifyError, ArduinoFloppyReader::CallbackOperation operation) -> ArduinoFloppyReader::WriteResponse {
+
+				if (dlg->wasAbortPressed()) return ArduinoFloppyReader::WriteResponse::wrAbort;
+
+				dlg->setOperation(operation);
+
+				CString str;
+				str.Format(L"%i", currentTrack);
+				dlg->setSide(currentSide);
+				dlg->setCylinder(currentTrack);
+				dlg->setProgress((currentTrack * 2) + ((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper) ? 1 : 0));
+
+				// Just continue
+				return ArduinoFloppyReader::WriteResponse::wrContinue;
+			});
+	}
+	else {
+		readerResult = writer.ADFToDisk(m_writePage->getFilename(), hdMode, m_writePage->isVerify(), m_writePage->isPrecomp(), m_writePage->isErase(), m_writePage->isIndex(),
+			[this, dlg](const int currentTrack, const ArduinoFloppyReader::DiskSurface currentSide, const bool isVerifyError, ArduinoFloppyReader::CallbackOperation operation) -> ArduinoFloppyReader::WriteResponse {
+
+				if (dlg->wasAbortPressed()) return ArduinoFloppyReader::WriteResponse::wrAbort;
+
+				dlg->setOperation(operation);
+
+				CString str;
+				str.Format(L"%i", currentTrack);
+				dlg->setSide(currentSide);
+				dlg->setCylinder(currentTrack);
+				dlg->setProgress((currentTrack * 2) + ((currentSide == ArduinoFloppyReader::DiskSurface::dsUpper) ? 1 : 0));
+
+				if (isVerifyError) {
+					switch (MessageBox(L"Verify error writing track.", L"Disk Write Error", MB_ABORTRETRYIGNORE)) {
+					case IDABORT: return ArduinoFloppyReader::WriteResponse::wrAbort;
+					case IDRETRY: return ArduinoFloppyReader::WriteResponse::wrRetry;
+					case IDIGNORE: return ArduinoFloppyReader::WriteResponse::wrSkipBadChecksums;
+					}
 				}
-			}
 
-			// Just continue
-			return ArduinoFloppyReader::WriteResponse::wrContinue;
-		});
+				// Just continue
+				return ArduinoFloppyReader::WriteResponse::wrContinue;
+			});
+	}
 
 	std::string lastError = writer.getLastError();
 	writer.closeDevice();
 
 	switch (readerResult) {
+	case ArduinoFloppyReader::ADFResult::adfrBadSCPFile:			MessageBox(L"Unsupported or incompatiable SCP file", L"File Error", MB_OK | MB_ICONEXCLAMATION); return;
 	case ArduinoFloppyReader::ADFResult::adfrComplete:					
 	{
 		CCompleteDialog dlg(m_sfx, (m_writePage->isVerify()) ? CCompleteDialog::CompleteMessage::cmWroteOK : CCompleteDialog::CompleteMessage::cmWroteNoVerify);
@@ -505,9 +570,10 @@ void CArduinoFloppyReaderWinDlg::runThreadWrite(CRunningDlg* dlg) {
 		return;
 	}
 	case ArduinoFloppyReader::ADFResult::adfrAborted:					return;
-	case ArduinoFloppyReader::ADFResult::adfrFirmwareTooOld:            MessageBox(L"Cannot write this file, you need to upgrade the firmware first.", L"ADF File Error", MB_OK | MB_ICONEXCLAMATION); return;
+	case ArduinoFloppyReader::ADFResult::adfrFirmwareTooOld:            MessageBox(L"Cannot write this file, you need to upgrade the firmware first.", L"File Error", MB_OK | MB_ICONEXCLAMATION); return;
 	case ArduinoFloppyReader::ADFResult::adfrExtendedADFNotSupported:	MessageBox(L"Extended ADF files are not currently supported.", L"ADF File Error", MB_OK | MB_ICONEXCLAMATION); return;
-	case ArduinoFloppyReader::ADFResult::adfrMediaSizeMismatch:			if (m_mediadensity.GetCurSel()) {
+	case ArduinoFloppyReader::ADFResult::adfrMediaSizeMismatch:			if (isSCPFile) MessageBox(L"SCP writing is only supported for DD disks and images.", L"SCP File Error", MB_OK | MB_ICONEXCLAMATION); else
+																		if (m_mediadensity.GetCurSel()) {
 																			if (hdMode) MessageBox(L"You have forced the disk to be HD, but a DD ADF file supplied.", L"ADF File Mismatch", MB_OK | MB_ICONEXCLAMATION); else
 																				MessageBox(L"You have forced the disk to be DD, but an HD ADF file supplied.", L"ADF File Mismatch", MB_OK | MB_ICONEXCLAMATION);
 																		} else {
@@ -515,6 +581,7 @@ void CArduinoFloppyReaderWinDlg::runThreadWrite(CRunningDlg* dlg) {
 																				MessageBox(L"Disk in drive was detected as DD, but an HD ADF file supplied.", L"ADF File Mismatch", MB_OK | MB_ICONEXCLAMATION);
 																		}
 																		return;
+	case ArduinoFloppyReader::ADFResult::adfrIPFLibraryNotAvailable:	MessageBox(L"IPF CAPSImg from Software Preservation Society Library is Missing or there was an error with the file", L"IPF Error", MB_OK | MB_ICONEXCLAMATION); break;
 	case ArduinoFloppyReader::ADFResult::adfrFileError:					MessageBox(L"Unable to open the specified file to read from it.", L"Input File Error", MB_OK | MB_ICONEXCLAMATION); return;
 	case ArduinoFloppyReader::ADFResult::adfrDriveError: {
 		std::string msg = "An error occured communicating with the Arduino interface:\r\n\r\n";
@@ -523,6 +590,13 @@ void CArduinoFloppyReaderWinDlg::runThreadWrite(CRunningDlg* dlg) {
 		return;
 	}
 	case ArduinoFloppyReader::ADFResult::adfrDiskWriteProtected:		MessageBox(L"Unable to write to the disk.  Disk is write protected.", L"Write Protection Error", MB_OK | MB_ICONEXCLAMATION); return;
+	default: {
+		std::wstring tmp = std::wstring(isSCPFile ? L"SCP" : L"ADF") + std::wstring(L" writing aborted with unknown error (");
+		tmp += std::to_wstring((int)readerResult) + L"," + std::to_wstring((int)writer.getLastErrorCode()) + L")\r\n\r\n";
+		tmp += L"If this happens again please post a screen shot of this dialog on Discord.";
+		MessageBox(tmp.c_str(), L"Write Error", MB_OK | MB_ICONEXCLAMATION); return;
+		return;
+	}
 	}
 }
 
@@ -578,7 +652,7 @@ std::wstring CArduinoFloppyReaderWinDlg::checkForComPort() {
 	return comPort;
 }
 
-// ADF to Disk write button callback
+// ADF/SCP to Disk write button callback
 void CArduinoFloppyReaderWinDlg::WriteToDisk()
 {
 	saveComPort();
@@ -586,7 +660,12 @@ void CArduinoFloppyReaderWinDlg::WriteToDisk()
 	if (comPort.length() < 1) return;
 
 	SetCursor(m_crHourGlass);
-	CRunningDlg dlg(L"Write ADF to Disk", [this](CRunningDlg* dlg) {
+	std::wstring title;
+
+	if (m_writePage->isSCPFile()) title = L"Write SCP to Disk"; else
+		if (m_writePage->isIPFFile()) title = L"Write IPF to Disk"; else title = L"Write ADF to Disk";
+
+	CRunningDlg dlg(title, [this](CRunningDlg* dlg) {
 		this->runThreadWrite(dlg);
 	}, this);
 
@@ -652,11 +731,12 @@ void CArduinoFloppyReaderWinDlg::OnBnClickedStartstop4()
 		}
 
 
-		bool checkDisk, checkPlus, checkDD, checkSlow, error, ddPLL;
+		bool checkDisk, checkPlus, checkDD, checkSlow, error, indexAlign;
 		error = io.eeprom_IsAdvancedController(checkDisk) != ArduinoFloppyReader::DiagnosticResponse::drOK;
 		error |= io.eeprom_IsDrawbridgePlusMode(checkPlus) != ArduinoFloppyReader::DiagnosticResponse::drOK;
 		error |= io.eeprom_IsDensityDetectDisabled(checkDD) != ArduinoFloppyReader::DiagnosticResponse::drOK;
 		error |= io.eeprom_IsSlowSeekMode(checkSlow) != ArduinoFloppyReader::DiagnosticResponse::drOK;
+		error |= io.eeprom_IsIndexAlignMode(indexAlign) != ArduinoFloppyReader::DiagnosticResponse::drOK;
 			
 		if (error) {
 			MessageBox(_T("An error occured reading the settings from DrawBridge.  Please try again."), _T("Sorry"), MB_OK | MB_ICONEXCLAMATION);
@@ -664,12 +744,14 @@ void CArduinoFloppyReaderWinDlg::OnBnClickedStartstop4()
 		}
 
 		// Create dialog
-		CEEPromDialog dlgSettings([checkDisk, checkPlus, checkDD, checkSlow, ddPLL](CEEPromDialog& dlgSettings) {
+		CEEPromDialog dlgSettings([checkDisk, checkPlus, checkDD, checkSlow, indexAlign](CEEPromDialog& dlgSettings) {
 			// Init Dialog
 			dlgSettings.m_checkDiskChange.SetCheck(checkDisk);
 			dlgSettings.m_checkPlus.SetCheck(checkPlus);
 			dlgSettings.m_checkDD.SetCheck(checkDD);
 			dlgSettings.m_checkSlow.SetCheck(checkSlow);
+			dlgSettings.m_forceindex.SetCheck(indexAlign);
+			
 			}, [&io, this](CEEPromDialog& dlgSettings) {
 				// Save settings
 				SetCursor(m_crHourGlass);
@@ -677,6 +759,7 @@ void CArduinoFloppyReaderWinDlg::OnBnClickedStartstop4()
 				error |= io.eeprom_SetDrawbridgePlusMode(dlgSettings.m_checkPlus.GetCheck()) != ArduinoFloppyReader::DiagnosticResponse::drOK;
 				error |= io.eeprom_SetDensityDetectDisabled(dlgSettings.m_checkDD.GetCheck()) != ArduinoFloppyReader::DiagnosticResponse::drOK;
 				error |= io.eeprom_SetSlowSeekMode(dlgSettings.m_checkSlow.GetCheck()) != ArduinoFloppyReader::DiagnosticResponse::drOK;
+				error |= io.eeprom_SetIndexAlignMode(dlgSettings.m_forceindex.GetCheck()) != ArduinoFloppyReader::DiagnosticResponse::drOK;
 
 				if (error) {
 					MessageBox(_T("An error occured saving these settings.  Please try again."), _T("Sorry"), MB_OK | MB_ICONEXCLAMATION);

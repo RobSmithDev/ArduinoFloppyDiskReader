@@ -60,7 +60,9 @@ namespace ArduinoFloppyReader {
 						adfrDriveError,					// Something wrong with reading the disk
 						adfrFirmwareTooOld,				// Firmware is too old
 						adfrMediaSizeMismatch,			// HD/DD mismatch
-						adfrExtendedADFNotSupported		// Extended ADFs not currently supported
+						adfrExtendedADFNotSupported,	// Extended ADFs not currently supported
+						adfrBadSCPFile,                 // Incompatiable IPF library
+						adfrIPFLibraryNotAvailable      // The IPF library was not found
 					};
 
 	enum class AnalysisResult {
@@ -101,6 +103,7 @@ namespace ArduinoFloppyReader {
 		const FirmwareVersion getFirwareVersion() const;
 
 		std::string getLastError() { return m_device.getLastErrorStr(); };
+		DiagnosticResponse getLastErrorCode() { return m_device.getLastError(); };
 
 		// Reads the disk and write the data to the ADF file supplied.  The callback is for progress, and you can returns FALSE to abort the process
 		// numTracks is the number of tracks to read.  Usually 80 (0..79), sometimes track 80 and 81 are needed
@@ -112,9 +115,15 @@ namespace ArduinoFloppyReader {
 		ADFResult DiskToSCP(const std::wstring& outputFile, bool isHDMode, const unsigned int numTracks, const unsigned char revolutions, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound, const int maxSectors, const CallbackOperation operation)> callback);
 
 		// Writes an ADF file back to a floppy disk.  Return FALSE in the callback to abort this operation.  If verify is set then the track isread back and and sector checksums are checked for 11 valid sectors
-		// IF using precomp mode then DO NOT connect the Arduino via a USB hub, and try to plug it into a USB2 port
 		ADFResult ADFToDisk(const std::wstring& inputFile, const bool inHDMode, bool verify, bool usePrecompMode, bool eraseFirst, bool writeFromIndex, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError, const CallbackOperation operation) > callback);
-	
+
+		// Writes an SCP file back to a floppy disk.  Return FALSE in the callback to abort this operation.  
+		ADFResult SCPToDisk(const std::wstring& inputFile, bool extraErases, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError, const CallbackOperation operation) > callback);
+
+		// Writes an IPF file back to a floppy disk.  Return FALSE in the callback to abort this operation.  
+		ADFResult IPFToDisk(const std::wstring& inputFile, bool extraErases, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError, const CallbackOperation operation) > callback);
+
+
 		// Run diagnostics on the system.  You do not need to call openDevice first.  Return TRUE if everything passed
 		bool runDiagnostics(const std::wstring& portName, std::function<void(bool isError, const std::string message)> messageOutput, std::function<bool(bool isQuestion, const std::string question)> askQuestion);
 		

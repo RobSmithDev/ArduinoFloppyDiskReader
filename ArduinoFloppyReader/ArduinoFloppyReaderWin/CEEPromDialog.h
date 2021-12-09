@@ -31,6 +31,7 @@ protected:
 		DDX_Control(pDX, IDC_CHECK4, m_checkPlus);
 		DDX_Control(pDX, IDC_CHECK5, m_checkDD);
 		DDX_Control(pDX, IDC_CHECK6, m_checkSlow);
+		DDX_Control(pDX, IDC_FORCEINDEX, m_forceindex);
 	};
 
 
@@ -55,6 +56,7 @@ public:
 		if (m_onSave) m_onSave(*this);
 		CDialogEx::OnOK();
 	};
+	CButton m_forceindex;
 };
 
 BEGIN_MESSAGE_MAP(CEEPromDialog, CDialogEx)

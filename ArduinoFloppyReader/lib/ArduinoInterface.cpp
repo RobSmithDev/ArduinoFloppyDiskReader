@@ -73,6 +73,8 @@ using namespace ArduinoFloppyReader;
 #define COMMAND_EEPROM_READ        'E'    // Read a value from the eeprom
 #define COMMAND_EEPROM_WRITE       'e'    // Write a value to the eeprom
 #define COMMAND_RESET              'R'    // Reset
+#define COMMAND_WRITEFLUX          'W'    // Requires Firmware V1.9.18
+#define COMMAND_ERASEFLUX          'w'    // Requires Firmware V1.9.18
 
 #define SPECIAL_ABORT_CHAR		   'x'
 
@@ -100,6 +102,8 @@ std::string lastCommandToName(LastCommand cmd) {
 	case LastCommand::lcMeasureRPM:		return "MeasureRPM";
 	case LastCommand::lcEEPROMRead:	    return "EEPROM Read";
 	case LastCommand::lcEEPROMWrite:	return "EEPROM Write";
+	case LastCommand::lcWriteFlux:		return "Write Flux";
+	case LastCommand::lcEraseFlux:		return "Erase Flux";
 	default:							return "Unknown";
 	}
 }
@@ -127,7 +131,8 @@ const std::string ArduinoInterface::getLastErrorStr() const {
 	case DiagnosticResponse::drSendDataFailed: return "Error sending track data to be written to disk.  This could be a COM timeout.";
 	case DiagnosticResponse::drRewindFailure: return "Arduino was unable to find track 0.  This could be a wiring fault or power supply failure.";
 	case DiagnosticResponse::drNoDiskInDrive: return "No disk in drive";
-	case DiagnosticResponse::drMediaTypeMismatch: return "An attempt to read or write had an incorrect amount of data given the DD/HD media used";
+	case DiagnosticResponse::drMediaTypeMismatch: if (m_lastCommand == LastCommand::lcWriteFlux) 
+		return "Write Flux only supports DD disks and data"; else return "An attempt to read or write had an incorrect amount of data given the DD/HD media used";
 	case DiagnosticResponse::drWriteTimeout: return "The Arduino could not receive the data quick enough to write to disk. Try connecting via USB2 and not using a USB hub.\n\nIf this still does not work, turn off precomp if you are using it.";
 	case DiagnosticResponse::drFramingError: return "The Arduino received bad data from the PC. This could indicate poor connectivity, bad baud rate matching or damaged cables.";
 	case DiagnosticResponse::drSerialOverrun: return "The Arduino received data faster than it could handle. This could either be a fault with the CTS connection or the USB/serial interface is faulty";
@@ -381,7 +386,14 @@ DiagnosticResponse ArduinoInterface::attemptToSync(std::string& versionString, S
 	int bytesRead = 0;
 
 	// Keep a rolling buffer looking for the 1Vxxx response
+	std::chrono::time_point<std::chrono::steady_clock> startTime = std::chrono::steady_clock::now();
 	for (;;) {
+		const auto timePassed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - startTime).count();
+
+		// Timeout after 8 seconds
+		if (timePassed>=8) 
+				return DiagnosticResponse::drPortError;
+
 		size = port.read(&buffer[4], 1);
 		bytesRead += size;
 		// Was something read?
@@ -909,6 +921,7 @@ DiagnosticResponse ArduinoInterface::eraseCurrentTrack() {
 	return m_lastError;
 }
 
+
 // Choose which surface of the disk to read from
 DiagnosticResponse ArduinoInterface::selectSurface(const DiskSurface side) {
 	m_lastCommand = LastCommand::lcSelectSurface;
@@ -1377,6 +1390,8 @@ inline int readBit(const unsigned char* buffer, const unsigned int maxLength, in
 }
 
 
+
+
 // HD - a bit like the precomp as its more accurate, but no precomp
 DiagnosticResponse ArduinoInterface::writeCurrentTrackHD(const unsigned char* mfmData, const unsigned short numBytes, const bool writeFromIndexPulse) {
 	m_lastCommand = LastCommand::lcWriteTrack;
@@ -1663,6 +1678,433 @@ DiagnosticResponse ArduinoInterface::internalWriteTrack(const unsigned char* dat
 	return m_lastError;
 }
 
+
+
+
+// Removes all flux transitions from the current track
+DiagnosticResponse ArduinoInterface::eraseFluxOnTrack() {
+	m_lastCommand = LastCommand::lcEraseFlux;
+
+	if ((m_version.major == 1) && ((m_version.minor < 9) || ((m_version.minor == 9) && (m_version.buildNumber < 18)))) {
+		m_lastError = DiagnosticResponse::drOldFirmware;
+		return m_lastError;
+	}
+	m_lastError = runCommand(COMMAND_ERASEFLUX);
+	if (m_lastError != DiagnosticResponse::drOK) return m_lastError;
+
+	char result;
+	if (!deviceRead(&result, 1, true)) {
+		m_lastError = DiagnosticResponse::drReadResponseFailed;
+		return m_lastError;
+	}
+
+	if (result == 'N') {
+		m_lastError = DiagnosticResponse::drWriteProtected;
+		return m_lastError;
+	}
+
+	// Check result
+	if (!deviceRead(&result, 1, true)) {
+		m_lastError = DiagnosticResponse::drReadResponseFailed;
+		return m_lastError;
+	}
+
+	if (result != '1') {
+		m_lastError = DiagnosticResponse::drError;
+		return m_lastError;
+	}
+
+	return m_lastError;
+}
+
+#define FLUX_OFFSET				42     // Minimum timer value
+#define FLUX_MULTIPLIER_TIME_DB	125    // Our flux writing resolution in nanoseconds
+#define FLUX_MINIMUM_NS         (DWORD)(FLUX_OFFSET*62.5f)
+
+#define FLUX_MINIMUM_DB		   (FLUX_MINIMUM_NS / FLUX_MULTIPLIER_TIME_DB)  // Minimum time in DB time
+
+#define FLUX_NOFLUX_OFFSET      5    // Starting value when 'no flux' is written. 
+#define FLUX_MINSAFE_OFFSET     5    // This is also the safe minimum per byte so we dont overrun the serial port
+
+#define FLUX_MINIMUM_PER_8_NS   ((FLUX_MINIMUM_DB + FLUX_MINSAFE_OFFSET) * 8)		// Minimum time per 8 flux timings allowed in total in ns
+#define FLUX_TIME_10000NS_DB    ((10000/FLUX_MULTIPLIER_TIME_DB)-FLUX_MINIMUM_DB)   // DB number for 10000ns (10us)
+
+#define FLUX_REPEAT_BLANK_DB    29    // The highest single amount of delay before a flux. This DOES NOT inlude FLUX_MINIMUM_DB
+#define FLUX_REPEAT_COUNTER     (FLUX_MINIMUM_DB+FLUX_MINSAFE_OFFSET)
+
+#define FLUX_SPECIAL_CODE_BLANK 30    // This special code causes DB to skip 3125ns of time without a flux transition.
+#define FLUX_SPECIAL_CODE_END   31    // This special code causes the writing to finish
+#define FLUX_JITTER				2        // Amount of time taken off of the revolution time incase there's some jitter (x FLUX_MULTIPLIER_TIME)
+#define BIT(x)					(1 << x)  // Quick mapping of a bit to bitmask for that bit
+#define BITSET(byte, x)			(byte & BIT(x)) // Quick check of bit set
+#define GET_BIT_IF_SET(byte,inputBit,outputBit) (BITSET(byte, inputBit)?BIT(outputBit):0)   // If inputBit in byte is set then returns outputBit as a mask
+
+// Structure to store temporary groupings of flux before encoding
+struct Times8 {
+	union {
+		uint8_t times[8];
+		struct {
+			uint8_t a, b, c, d, e, f, g, h;
+		};
+	};
+	DWORD numUsed;
+};
+
+// Returns the TOTAL timing for a converted DB time value. If you multiply this by FLUX_MULTIPLIER_TIME_DB you get actual flux time in NS 
+inline DWORD getDBTime(uint8_t dbTime) {
+	if (dbTime <= FLUX_REPEAT_BLANK_DB) return dbTime + FLUX_MINIMUM_DB;
+	return FLUX_NOFLUX_OFFSET + FLUX_MINIMUM_DB;
+}
+
+// Checks that the block will not get written so fast that we'll have an issue with the serial port.  This works in DB timescales
+// Returns the number of extra timing values that were needed to be added to make this meet minimum requirements
+DWORD validateBlock(Times8& block) {
+	DWORD timingsAdjusted = 0;
+	DWORD totalTime = 0;
+	int numUnder = 0;
+	for (size_t i = 0; i < block.numUsed; i++) {
+		totalTime += getDBTime(block.times[i]);
+		if (block.times[i] < FLUX_MINSAFE_OFFSET) numUnder++;
+	}
+
+	// Ok, an issue, so we'll have to fix some of the slower flux times, this isn't ideal
+	if (totalTime < FLUX_MINIMUM_PER_8_NS) {
+		DWORD fixAmountNeeded = (DWORD)ceil((float)(FLUX_MINIMUM_PER_8_NS - totalTime) / (float)numUnder);
+		for (size_t i = 0; i < block.numUsed; i++)
+			if (block.times[i] < FLUX_MINSAFE_OFFSET) {
+				block.times[i] += (uint8_t)fixAmountNeeded;
+				totalTime += fixAmountNeeded;
+				timingsAdjusted++;
+				// Only do what we have to
+				if (totalTime >= FLUX_MINIMUM_PER_8_NS) break;
+			}
+
+		// Still too low?
+		if (fixAmountNeeded) {
+			for (size_t i = 0; i < block.numUsed; i++)
+				if (block.times[i] < FLUX_REPEAT_BLANK_DB) {
+					block.times[i] += (uint8_t)fixAmountNeeded;
+					totalTime += fixAmountNeeded;
+					timingsAdjusted++;
+					// Only do what we have to
+					if (totalTime >= FLUX_MINIMUM_PER_8_NS) break;
+				}
+		}
+	}
+
+	return timingsAdjusted;
+}
+
+// Append a fluxTime to a block. fluxTime is in DB time. timingsExtra is a running count of extra data that was needed to make blocks valid
+void appendToBlock(DWORD fluxTime, DWORD& timingsExtra, Times8& currentBlock, std::vector<Times8>& output) {
+	DWORD timingsAdjusted = 0;
+	// Add extra blocks if this is longer than the 'dont write' repeat interval
+	while (fluxTime > FLUX_REPEAT_BLANK_DB) {
+		// Re-claim some time
+		if ((timingsExtra) && (fluxTime > FLUX_REPEAT_BLANK_DB + 1)) {
+			fluxTime--;
+			timingsExtra--;
+		}
+
+		currentBlock.times[currentBlock.numUsed++] = FLUX_SPECIAL_CODE_BLANK;
+		if (currentBlock.numUsed >= 8) {
+			timingsAdjusted += validateBlock(currentBlock);
+			output.push_back(currentBlock);
+			currentBlock.numUsed = 0;
+		}
+		fluxTime -= FLUX_REPEAT_COUNTER;
+	}
+
+	// Re-claim some time
+	if ((timingsExtra) && (fluxTime > FLUX_MINSAFE_OFFSET)) {
+		fluxTime--;
+		timingsExtra--;
+	}
+
+	// Dont forget the actual data
+	currentBlock.times[currentBlock.numUsed++] = (uint8_t)fluxTime;
+	if (currentBlock.numUsed >= 8) {
+		timingsAdjusted += validateBlock(currentBlock);
+		output.push_back(currentBlock);
+		currentBlock.numUsed = 0;
+	}
+}
+
+// Writes the flux timings (in nanoseconds) to the drive.  The Drive RPM is needed to compensate and correct the flux times.
+DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTimes, const float driveRPM, bool compensateFluxTimings, bool terminateAtIndex) {
+	m_lastCommand = LastCommand::lcWriteFlux;
+
+	if ((m_version.major == 1) && ((m_version.minor < 9) || ((m_version.minor == 9) && (m_version.buildNumber < 18)))) {
+		m_lastError = DiagnosticResponse::drOldFirmware;
+		return m_lastError;
+	}
+	if (m_isHDMode) {
+		m_lastError = DiagnosticResponse::drMediaTypeMismatch;
+		return m_lastError;
+	}
+
+	// Assume this is an unformatted track
+	if (fluxTimes.size() < 1) {
+		m_lastError = eraseFluxOnTrack();
+		return m_lastError;
+	}
+
+	// Step 1: calculate the total flux length and convert into DB time values
+	DWORD totalFluxTime = 0;
+	bool existsOver10000 = false;
+	bool existsUnderMinimum = false;
+	std::vector<DWORD> dbTime;
+	int hdStyleCount = 0;
+	int ddStyleCount = 0;
+
+	DWORD fluxTimeCounters[7] = { 0,0,0,0,0,0,0 };
+	DWORD totalCounter = 0;
+
+	for (DWORD t : fluxTimes) {
+		if (t < 1000) continue;  // skip really fast ones
+		if (t > 4500) ddStyleCount++;
+		if (t < 3500) hdStyleCount++;
+		DWORD tmp = (t + 1000) / 2000;
+		if (t < FLUX_MINIMUM_NS) t = FLUX_MINIMUM_NS;
+		t = ((t - FLUX_MINIMUM_NS) + (FLUX_MULTIPLIER_TIME_DB / 2)) / FLUX_MULTIPLIER_TIME_DB;
+		dbTime.push_back(t);
+		totalFluxTime += t + FLUX_MINIMUM_DB;
+		if (t > FLUX_TIME_10000NS_DB) existsOver10000 = true;
+		if (t < FLUX_MINSAFE_OFFSET) existsUnderMinimum = true;
+		if (tmp < 7) {
+			fluxTimeCounters[tmp]++;  // keep a counter of which types of flux are in the image
+			totalCounter++;
+		}
+	}
+
+	// We cant write this.
+	if (hdStyleCount > ddStyleCount) {
+		bool isFirst = true;
+		int threshold = 0;
+
+		DWORD lastValue = 0;
+		bool unformatted = true;
+
+		// This picks up 'unformatted track' simulation output from HxC and replaces it with a proper unformatted track, if thats what it is.
+		int percentageAllowed = 50;
+		for (size_t i = 1; i < 6; i++) {
+			int percentageOfFlux = fluxTimeCounters[i] * 100 / totalCounter;
+			if (((int)abs(percentageOfFlux - percentageAllowed)) <= (int)(percentageAllowed + (7 - i))) {
+				// Within the allowed window of 'randomness' for unformatted
+				percentageAllowed /= 2;
+				continue;
+			}
+			else {
+				// Out of range, probably not an unformatted track
+				unformatted = false;
+				break;
+			}
+		}
+
+		// This is an unformatted track.  We can write that easily
+		if (unformatted) {
+			m_lastError = eraseFluxOnTrack();
+			return m_lastError;
+		}
+
+		m_lastError = DiagnosticResponse::drMediaTypeMismatch;
+		return m_lastError;
+	}
+
+	// Step 2: calculate the time taken for a full revolution in nanoseconds
+	const uint64_t rpmNanoSeconds = (uint64_t)(60000000000.0f / driveRPM);
+	// Convert it to DB time
+	const uint64_t rpmInDBTime = (rpmNanoSeconds / FLUX_MULTIPLIER_TIME_DB) - FLUX_JITTER;
+
+	// Step 3: Make the data fit the revolution
+	if (compensateFluxTimings) {
+		if (totalFluxTime < rpmInDBTime - 100) {
+			// No, not really. First, lets increase all the really slow pulses under FLUX_MINSAFE_OFFSET
+			while (totalFluxTime < rpmInDBTime - 1) {
+				bool madeChanges = false;
+				for (DWORD& t : dbTime) {
+					if (t < FLUX_MINSAFE_OFFSET) {
+						t++;
+						totalFluxTime++;
+						madeChanges = true;
+
+						if (t < FLUX_MINSAFE_OFFSET) existsUnderMinimum = true;
+						if (totalFluxTime >= rpmInDBTime - 1) break;
+					}
+				}
+				if (!existsUnderMinimum) break;
+				if (!madeChanges) break;
+			}
+
+			// Are we still under? If so, increase everything
+			if (totalFluxTime < rpmInDBTime - 1) {
+				// Increase every sample
+				for (DWORD& t : dbTime) {
+					t++;
+					totalFluxTime++;
+					if (totalFluxTime >= rpmInDBTime - 1) break;
+				}
+			}
+		}
+		else {
+			if (totalFluxTime > rpmInDBTime - 1) {
+				// Do we have too much data?  First, lets shorten some of the really long flux transitions, ie: over 10000ns
+				if (existsOver10000) {
+					while (totalFluxTime >= rpmInDBTime) {
+						existsOver10000 = false;
+						for (DWORD& t : dbTime) {
+							if (t > FLUX_TIME_10000NS_DB) {
+								t--;
+								totalFluxTime--;
+
+								if (t > FLUX_TIME_10000NS_DB) existsOver10000 = true;
+								if (totalFluxTime < rpmInDBTime) break;
+							}
+						}
+						if (!existsOver10000) break;
+					}
+				}
+
+				// Are we still over?
+				if (totalFluxTime >= rpmInDBTime) {
+					// Drop every sample over FLUX_MINSAFE_OFFSET down by one
+					for (DWORD& t : dbTime) {
+						if (t > FLUX_MINSAFE_OFFSET) {
+							t--;
+							totalFluxTime--;
+							if (totalFluxTime < rpmInDBTime) break;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// We now should have data that approx matches a revolution of disk data. Lets convert it into DB packets.
+	// Step 4: Group into blocks of 8 flux times that do not exceed the rules of that block
+	std::vector<Times8> fluxTimesGrouped;
+	Times8 block;
+	block.numUsed = 0;
+	DWORD timingsOver = 0;
+	uint8_t firstFlux;
+
+	// Extract FirstFlux.  This is a special one just to kick-start the process
+	if (dbTime[0] > FLUX_REPEAT_BLANK_DB) {
+		dbTime[0] -= FLUX_REPEAT_COUNTER;
+		firstFlux = FLUX_SPECIAL_CODE_BLANK;
+	}
+	else {
+		firstFlux = (uint8_t)dbTime[0];
+		dbTime.erase(dbTime.begin());
+	}
+
+	for (const DWORD& t : dbTime) appendToBlock(t, timingsOver, block, fluxTimesGrouped);
+	// Dont forget the final block
+	if (block.numUsed) {
+		// Add the special break codes
+		for (int i = block.numUsed; i < 8; i++) block.times[i] = FLUX_SPECIAL_CODE_END;
+		timingsOver += validateBlock(block);
+		fluxTimesGrouped.push_back(block);
+	}
+	else {
+		// Add a block with the BREAK code in it
+		block.numUsed = 8;
+		for (int i = 0; i < 8; i++) block.times[i] = FLUX_SPECIAL_CODE_END;
+		fluxTimesGrouped.push_back(block);
+	}
+
+	// Hmm, this could be an issue
+	if ((timingsOver >= FLUX_JITTER) && (compensateFluxTimings)) {
+		// We'll look at the blocks of 8, and see if theres any we can shorten.  Its rare though
+		for (Times8& block : fluxTimesGrouped) {
+			DWORD total = 0;
+			// See how long this block is
+			for (size_t a = 0; a < block.numUsed; a++) total += getDBTime(block.times[a]);
+			// Does it have some "space"
+			if (total > FLUX_MINIMUM_PER_8_NS) {
+				// Re-claim from this
+				for (size_t a = 0; a < block.numUsed; a++) {
+					if ((block.times[a]) && (block.times[a] <= FLUX_REPEAT_BLANK_DB)) {
+						total--;
+						block.times[a]--;
+						timingsOver--;
+						if (!total) break;
+						if (!timingsOver) break;
+					}
+				}
+			}
+			// Stop if we succeeded
+			if (!timingsOver) break;
+		}
+	}
+
+	// Now convert the blocks of 8, into packed data of 5 bytes for DB according to the following schema:
+	//    Bit :  7   6   5   4   3   2   1   0  
+	// Byte 1 : D4  C4  B4  A4  A3  A2  A1  A0
+	// Byte 2 : C3  C2  C1  C0  B3  B2  B1  B0
+	// Byte 3 : E3  E2  E1  E0  D3  D2  D1  D0
+	// Byte 4 : E4  H4  G4  F4  F3  F2  F1  F0
+	// Byte 5 : H3  H2  H1  H0  G3  G2  G1  G0
+	std::vector<uint8_t> flux;
+	flux.push_back(terminateAtIndex ? 1 : 0);  
+	flux.push_back(firstFlux);   // special value to get it started
+
+	for (const Times8& block : fluxTimesGrouped) {
+		flux.push_back((block.a & 0x1F) | GET_BIT_IF_SET(block.b, 4, 5) | GET_BIT_IF_SET(block.c, 4, 6) | GET_BIT_IF_SET(block.d, 4, 7));
+		flux.push_back((block.b & 0x0F) | ((block.c & 0x0F) << 4));
+		flux.push_back((block.d & 0x0F) | ((block.e & 0x0F) << 4));
+		flux.push_back((block.f & 0x1F) | GET_BIT_IF_SET(block.g, 4, 5) | GET_BIT_IF_SET(block.h, 4, 6) | GET_BIT_IF_SET(block.e, 4, 7));
+		flux.push_back((block.g & 0x0F) | ((block.h & 0x0F) << 4));
+	}
+
+	m_lastError = runCommand(COMMAND_WRITEFLUX);
+	if (m_lastError != DiagnosticResponse::drOK) return m_lastError;
+
+	unsigned char chr;
+	if (!deviceRead(&chr, 1, true)) {
+		m_lastError = DiagnosticResponse::drReadResponseFailed;
+		return m_lastError;
+	}
+
+	// 'N' means NO Writing, aka write protected
+	if (chr == 'N') {
+		m_lastError = DiagnosticResponse::drWriteProtected;
+		return m_lastError;
+	}
+	if (chr != 'Y') {
+		m_lastError = DiagnosticResponse::drStatusError;
+		return m_lastError;
+	}
+
+	if (!deviceWrite((const void*)flux.data(), flux.size())) {
+		m_lastError = DiagnosticResponse::drSendDataFailed;
+		return m_lastError;
+	}
+
+	unsigned char response;
+	if (!deviceRead(&response, 1, true)) {
+		m_lastError = DiagnosticResponse::drTrackWriteResponseError;
+		return m_lastError;
+	}
+
+	// If this is a '1' then the Arduino didn't miss a single bit!
+	if ((response != '1') && (response != 'I')) {
+		switch (response) {
+		case 'X': m_lastError = DiagnosticResponse::drWriteTimeout;  break;
+		case 'Y': m_lastError = DiagnosticResponse::drFramingError; break;
+		case 'Z': m_lastError = DiagnosticResponse::drSerialOverrun; break;
+		default:
+			m_lastError = DiagnosticResponse::drStatusError;
+			break;
+		}
+		return m_lastError;
+	}
+
+	m_lastError = DiagnosticResponse::drOK;
+	return m_lastError;
+}
+
+
 // Returns a list of ports this could be available on
 void ArduinoInterface::enumeratePorts(std::vector<std::wstring>& portList) {
 	portList.clear();
@@ -1671,8 +2113,19 @@ void ArduinoInterface::enumeratePorts(std::vector<std::wstring>& portList) {
 	SerialIO prt;
 	prt.enumSerialPorts(prts);
 
-	for (const SerialIO::SerialPortInformation& port : prts)
+	for (const SerialIO::SerialPortInformation& port : prts) {
+		// Skip any Greaseweazle boards 
+		if ((port.vid == 0x1209) && (port.pid == 0x4d69)) continue;
+		if ((port.vid == 0x1209) && (port.pid == 0x0001)) continue;
+		if (port.productName == L"Greaseweazle") continue;
+		if (port.instanceID.find(L"\\GW") != std::wstring::npos) continue;
+
+		// Skip Supercard pro
+		if (port.portName.find(L"SCP-JIM") != std::wstring::npos) continue;
+		if (port.portName.find(L"Supercard Pro") != std::wstring::npos) continue;
+
 		portList.push_back(port.portName);
+	}
 }
 
 
@@ -1853,6 +2306,19 @@ DiagnosticResponse ArduinoInterface::eeprom_IsSlowSeekMode(bool& enabled) {
 	return m_lastError;
 }
 
+DiagnosticResponse ArduinoInterface::eeprom_IsIndexAlignMode(bool& enabled) {
+	unsigned char ret[2];
+
+	for (int a = 0; a < 2; a++) {
+		DiagnosticResponse r = eepromRead(a + 10, ret[a]);
+		if (r != DiagnosticResponse::drOK) return r;
+	}
+
+	enabled = (ret[0] == 0x69) && (ret[1] == 0x61);
+	m_lastError = DiagnosticResponse::drOK;
+	return m_lastError;
+}
+
 DiagnosticResponse ArduinoInterface::eeprom_SetAdvancedController(bool enabled) {
 	unsigned char ret[4];
 
@@ -1926,4 +2392,24 @@ DiagnosticResponse ArduinoInterface::eeprom_SetSlowSeekMode(bool enabled) {
 	m_lastError = DiagnosticResponse::drOK;
 	return m_lastError;
 }
+
+
+DiagnosticResponse ArduinoInterface::eeprom_SetIndexAlignMode(bool enabled) {
+	unsigned char ret[2];
+
+	if (enabled) {
+		ret[0] = 0x69;
+		ret[1] = 0x61;
+	}
+	else memset(ret, 0, 2);
+
+	for (int a = 0; a < 2; a++) {
+		DiagnosticResponse r = eepromWrite(a + 10, ret[a]);
+		if (r != DiagnosticResponse::drOK) return r;
+	}
+
+	m_lastError = DiagnosticResponse::drOK;
+	return m_lastError;
+}
+
 

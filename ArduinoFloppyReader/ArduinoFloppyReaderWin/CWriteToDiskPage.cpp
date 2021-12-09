@@ -93,12 +93,15 @@ BOOL CWriteToDiskPage::OnInitDialog() {
 	index = ((wcstol(buf, nullptr, 10) != 0) || (wcslen(buf) < 1)) ? 1 : 0;
 	m_index.SetCheck(index);
 
+	OnEnChangeFilename();
+
 	return TRUE;
 }
 
 BEGIN_MESSAGE_MAP(CWriteToDiskPage, CDialogEx)
 	ON_BN_CLICKED(IDC_BROWSE2, &CWriteToDiskPage::OnBnClickedBrowse2)
 	ON_BN_CLICKED(IDC_STARTSTOP2, &CWriteToDiskPage::OnBnClickedStartstop2)
+	ON_EN_CHANGE(IDC_FILENAME2, &CWriteToDiskPage::OnEnChangeFilename)
 END_MESSAGE_MAP()
 
 
@@ -110,19 +113,21 @@ const std::wstring CWriteToDiskPage::getFilename() const {
 	return filename.GetBuffer();
 }
 
-
+/*
+bool isSCPFile = false;
+	*/
 
 void CWriteToDiskPage::OnBnClickedBrowse2()
 {
 	// szFilters is a text string that includes two file name filters:
-	TCHAR szFilters[] = _T("Amiga Disk Files (*.adf)|*.adf|All Files (*.*)|*.*||");
+	TCHAR szFilters[] = _T("Supported Files (*.adf, *.scp, *.ipf)|*.adf;*.scp;*.ipf|Amiga Disk Files (*.adf)|*.adf|Supercard Pro Files (*.scp)|*.adf|Amiga Disk Files (*.ipf)|*.ipf|All Files (*.*)|*.*||");
 
 	// Create an Save dialog
 	CString oldFileName;
 	m_filename.GetWindowText(oldFileName);
 
 	CFileDialog fileDlg(TRUE, _T("adf"), oldFileName, OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NODEREFERENCELINKS | OFN_ENABLESIZING | OFN_EXPLORER, szFilters, this);
-	fileDlg.m_ofn.lpstrTitle = L"Select an ADF File to Write To Disk";
+	fileDlg.m_ofn.lpstrTitle = L"Select a Disk Image File to Write To Disk";
 
 	// Display it
 	if (fileDlg.DoModal() == IDOK)
@@ -138,4 +143,37 @@ void CWriteToDiskPage::OnBnClickedStartstop2()
 	}
 
 	if (m_onStart) m_onStart();
+}
+
+const bool CWriteToDiskPage::isIPFFile() const {
+	bool scpFIle = false;
+	std::wstring fleName = getFilename();
+	for (wchar_t& c : fleName) c = toupper(c);
+	const wchar_t* extension = wcsrchr(fleName.c_str(), L'.');
+	if (extension) {
+		extension++;
+		scpFIle = wcscmp(extension, L"IPF") == 0;
+	}
+	return scpFIle;
+}
+
+const bool CWriteToDiskPage::isSCPFile() const {
+	bool scpFIle = false;
+	std::wstring fleName = getFilename();
+	for (wchar_t& c : fleName) c = toupper(c);
+	const wchar_t* extension = wcsrchr(fleName.c_str(), L'.');
+	if (extension) {
+		extension++;
+		scpFIle = wcscmp(extension, L"SCP") == 0;
+	}
+	return scpFIle;
+}
+
+
+void CWriteToDiskPage::OnEnChangeFilename()
+{
+	const bool notADF = isSCPFile() || isIPFFile();
+	m_verify.EnableWindow(!notADF);
+	m_precomp.EnableWindow(!notADF);
+	m_index.EnableWindow(!notADF);
 }

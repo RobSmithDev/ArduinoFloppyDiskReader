@@ -198,6 +198,10 @@
   <ItemGroup>
     <ClInclude Include="..\lib\ADFWriter.h" />
     <ClInclude Include="..\lib\ArduinoInterface.h" />
+    <ClInclude Include="..\lib\capsapi\CapsAPI.h" />
+    <ClInclude Include="..\lib\capsapi\CapsLib.h" />
+    <ClInclude Include="..\lib\capsapi\CapsPlug.h" />
+    <ClInclude Include="..\lib\capsapi\Comtype.h" />
     <ClInclude Include="..\lib\ftdi.h" />
     <ClInclude Include="..\lib\RotationExtractor.h" />
     <ClInclude Include="..\lib\SerialIO.h" />
@@ -224,6 +228,12 @@
     <ClCompile Include="..\lib\ArduinoInterface.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\lib\capsapi\CapsPlug.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
     </ClCompile>

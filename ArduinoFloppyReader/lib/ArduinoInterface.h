@@ -52,6 +52,7 @@
 #define FLAGS_DRAWBRIDGE_PLUSMODE	   (1 << 2)
 #define FLAGS_DENSITYDETECT_ENABLED    (1 << 3)
 #define FLAGS_SLOWSEEKING_MODE		   (1 << 4)
+#define FLAGS_INDEX_ALIGN_MODE		   (1 << 5)
 #define FLAGS_FIRMWARE_BETA            (1 << 7)
 
 namespace ArduinoFloppyReader {
@@ -149,7 +150,9 @@ namespace ArduinoFloppyReader {
 		lcCheckDensity,
 		lcMeasureRPM,
 		lcEEPROMRead,
-		lcEEPROMWrite
+		lcEEPROMWrite,
+		lcWriteFlux,
+		lcEraseFlux
 	};
 
 	class ArduinoInterface {
@@ -291,6 +294,12 @@ namespace ArduinoFloppyReader {
 		// The precomp version of the above. 
 		DiagnosticResponse  writeCurrentTrackPrecomp(const unsigned char* mfmData, const unsigned short numBytes, const bool writeFromIndexPulse, bool usePrecomp);
 
+		// Writes the flux timings (in nanoseconds) to the drive.  The Drive RPM is needed tp compensate and correct the flux times (if enabled).
+		DiagnosticResponse writeFlux(const std::vector<DWORD>& fluxTimes, const float driveRPM, bool compensateFluxTimings, bool terminateAtIndex = false);
+
+		// Removes all flux transitions from the current track
+		DiagnosticResponse eraseFluxOnTrack();
+
 		// Erases the current track by writing 0xAA to it
 		DiagnosticResponse eraseCurrentTrack();
 
@@ -302,7 +311,6 @@ namespace ArduinoFloppyReader {
 
 		// Returns true if the track actually contains some data, else its considered blank or unformatted
 		bool trackContainsData(const RawTrackDataDD& trackData) const;
-		bool trackContainsData(void* trackData, const int dataLengthInBytes) const;
 
 		// Closes the port down
 		void closePort();
@@ -312,12 +320,14 @@ namespace ArduinoFloppyReader {
 		DiagnosticResponse eeprom_IsDrawbridgePlusMode(bool& enabled);
 		DiagnosticResponse eeprom_IsDensityDetectDisabled(bool& enabled);
 		DiagnosticResponse eeprom_IsSlowSeekMode(bool& enabled);
+		DiagnosticResponse eeprom_IsIndexAlignMode(bool& enabled);
 
 		// Check the EEPROM setting for advanced controller
 		DiagnosticResponse eeprom_SetAdvancedController(bool enabled);
 		DiagnosticResponse eeprom_SetDrawbridgePlusMode(bool enabled);
 		DiagnosticResponse eeprom_SetDensityDetectDisabled(bool enabled);
 		DiagnosticResponse eeprom_SetSlowSeekMode(bool enabled);
+		DiagnosticResponse eeprom_SetIndexAlignMode(bool enabled);
 	};
 };
 

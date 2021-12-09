@@ -61,6 +61,12 @@ const long long StreamMax = std::numeric_limits<std::streamsize>::max();
 #include <netdb.h>
 #endif 
 
+//#include "ftdi.h"
+#include "capsapi/Comtype.h"
+#include "capsapi/CapsAPI.h"
+#include "capsapi/CapsPlug.h"
+
+
 using namespace ArduinoFloppyReader;
 
 #ifndef OUTPUT_TIME_IN_NS
@@ -535,13 +541,19 @@ ADFWriter::~ADFWriter() {
 #ifdef _WIN32
 	WSACleanup();
 #endif
+	// Incase it was used
+	CapsExit();
 }
 
 // Open the device we want to use.  Returns TRUE if it worked
 bool ADFWriter::openDevice(const std::wstring& portName) {
 	if (m_device.openPort(portName) != DiagnosticResponse::drOK) return false;
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
-	return m_device.enableReading(true, true)== DiagnosticResponse::drOK;
+	if (m_device.enableReading(true, true) != DiagnosticResponse::drOK) {
+		m_device.closePort();
+		return false;
+	}
+	return true;
 }
 
 // Close the device when we've finished
@@ -557,13 +569,6 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 
 
 	unsigned int major=0, minor=0, rev=0;
-
-
-
-	if (!askQuestion(false, "Please insert a *write protected* disk in the drive that was ideally not written using this tool.\r\nUse a disk that you don't mind being erased.\nThis disk must contain data/formatted as an AmigaDOS disk")) {
-		messageOutput(true, "Diagnostics aborted");
-		return false;
-	}
 
 	msg << "Attempting to open and use ";
 	char convert[256];
@@ -670,6 +675,7 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 		if (version.deviceFlags1 & FLAGS_DRAWBRIDGE_PLUSMODE) messageOutput(false, "      o DrawBridge PLUS"); else messageOutput(false, "      o DrawBridge Classic");
 		if (version.deviceFlags1 & FLAGS_DENSITYDETECT_ENABLED) messageOutput(false, "      o HD/DD Detect Enabled");
 		if (version.deviceFlags1 & FLAGS_SLOWSEEKING_MODE) messageOutput(false, "      o Slow Seeking Mode Enabled");
+		if (version.deviceFlags1 & FLAGS_INDEX_ALIGN_MODE) messageOutput(false, "      o Force Index Alignment on Writes Enabled");
 		if (version.deviceFlags1 & FLAGS_FIRMWARE_BETA) messageOutput(false, "      o Beta Firmware");
 	}
 
@@ -702,6 +708,12 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 				return false;
 			}
 		}
+	}
+
+	// Request a disk
+	if (!askQuestion(false, "Please insert a *write protected* disk in the drive that was ideally not written using this tool.\r\nUse a disk that you don't mind being erased.\nThis disk must contain data/formatted as an AmigaDOS disk")) {
+		messageOutput(true, "Diagnostics aborted");
+		return false;
 	}
 
 	// Functions to test
@@ -1347,6 +1359,9 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring& inputFile, bool mediaIsHD, bo
 	// Upgrade to writing mode
 	if (m_device.enableWriting(true, true)!=DiagnosticResponse::drOK) return ADFResult::adfrDriveError;
 
+	ArduinoFloppyReader::FirmwareVersion version = m_device.getFirwareVersion();
+	bool supportsFluxErase = ((version.major > 1) || ((version.major == 1) && (version.minor == 9) && (version.buildNumber >= 18)));
+
 	// Attempt to open the file
 #ifdef _WIN32	
 	std::ifstream hADFFile(inputFile, std::ifstream::in | std::ifstream::binary);
@@ -1479,10 +1494,11 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring& inputFile, bool mediaIsHD, bo
 			if (eraseFirst) {
 				// Run the erase cycle twice
 				m_device.eraseCurrentTrack();
-				m_device.eraseCurrentTrack();
+				if (supportsFluxErase) m_device.eraseFluxOnTrack(); else m_device.eraseCurrentTrack();
 				m_device.eraseCurrentTrack();
 			} else
-				if (writeFromIndex) m_device.eraseCurrentTrack();
+				if (writeFromIndex) 
+					if (supportsFluxErase) m_device.eraseFluxOnTrack(); m_device.eraseCurrentTrack();
 
 			if (callback)
 				if (callback(currentTrack, surface, false, failCount > 0 ? CallbackOperation::coRetryWriting : CallbackOperation::coWriting) == WriteResponse::wrAbort) {
@@ -1597,9 +1613,9 @@ struct SCPFileHeader {
 	unsigned char	startTrack;
 	unsigned char   endTrack;
 	unsigned char	flags;
-	unsigned char	bitcellEncoding;
+	unsigned char	bitcellEncoding;   // 0=16 bits per sample, 
 	unsigned char	numHeads;
-	unsigned char   timeBase;
+	unsigned char   timeBase;          // Resolution. Time in ns = (timeBase+1)*25
 	uint32_t	checksum;
 };
 
@@ -1620,9 +1636,10 @@ struct SCPTrackRevolution {
 #define BITFLAG_INDEX		0
 #define BITFLAG_96TPI		1
 #define BITFLAG_NORMALISED  3
+#define BITFLAG_EXTENDED    6
 #define BITFLAG_FLUXCREATOR 7
 
-typedef std::vector<unsigned short> SCPTrackData;
+typedef std::vector<uint16_t> SCPTrackData;
 
 struct SCPTrackInMemory {
 	SCPTrackHeader header;
@@ -1670,10 +1687,10 @@ ADFResult ADFWriter::DiskToSCP(const std::wstring& outputFile, bool isHDMode, co
 	header.numRevolutions = revolutions;
 	header.startTrack = 0;
 	header.numHeads = 0;  // both heads
-	header.timeBase = 0;
+	header.timeBase = 0;  // 25ns
 	header.endTrack = (numTracks*2) - 1;
 	header.flags = (1 << BITFLAG_INDEX) | (isHDMode?(1 << BITFLAG_NORMALISED):0) | (1 << BITFLAG_96TPI) | (1 << BITFLAG_FLUXCREATOR);
-	header.bitcellEncoding = 0; // 25ns
+	header.bitcellEncoding = 0; // 16-bit
 	// to be calculated
 	header.checksum = 0;
 
@@ -1883,6 +1900,166 @@ ADFResult ADFWriter::DiskToSCP(const std::wstring& outputFile, bool isHDMode, co
 	return ADFResult::adfrComplete;
 }
 
+// Writes an SCP file back to a floppy disk.  Return FALSE in the callback to abort this operation.  
+ADFResult ADFWriter::SCPToDisk(const std::wstring& inputFile, bool extraErases, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError, const CallbackOperation operation) > callback) {
+	if (!m_device.isOpen()) return ADFResult::adfrDriveError;
+	ArduinoFloppyReader::FirmwareVersion version = m_device.getFirwareVersion();
+	if ((version.major == 1) && ((version.minor < 9) || ((version.minor == 9) && (version.buildNumber < 18)))) return ADFResult::adfrFirmwareTooOld;
+
+	m_device.checkForDisk(true);
+	if (!m_device.isDiskInDrive()) return ADFResult::adfrDriveError;
+
+	// Attempt ot open the file
+#ifdef _WIN32		
+	std::fstream hADFFile = std::fstream(inputFile, std::ofstream::in | std::ofstream::binary);
+#else
+	std::string inputFileA;
+	quickw2a(inputFile, inputFileA);
+	std::fstream hADFFile = std::fstream(inputFileA, std::ofstream::in | std::ofstream::binary);
+#endif	
+	if (!hADFFile.is_open()) return ADFResult::adfrFileError;
+	assert(sizeof(SCPFileHeader) == 16);
+	// Try to read the header
+
+	SCPFileHeader header;
+	try {
+		hADFFile.read((char*)&header, sizeof(header));
+	}
+	catch (...) {
+		hADFFile.close();
+		return ADFResult::adfrFileIOError;
+	}
+
+	// Get the drive RPM spin speed
+	if (callback)
+		if (callback(0, DiskSurface::dsLower, false, CallbackOperation::coStarting) == WriteResponse::wrAbort) return ADFResult::adfrAborted;
+	float driveRPM = 300.0f;
+#ifndef _DEBUG
+	if (m_device.measureDriveRPM(driveRPM) != DiagnosticResponse::drOK) return ADFResult::adfrDriveError;
+#else
+	driveRPM = 301;
+#endif
+
+	// Validate the format that we support
+	if ((header.headerSCP[0] != 'S') || (header.headerSCP[1] != 'C') || (header.headerSCP[2] != 'P'))
+		return ADFResult::adfrBadSCPFile;
+	if (header.numHeads != 0)
+		return ADFResult::adfrBadSCPFile;
+	if (header.numHeads != 0)
+		return ADFResult::adfrBadSCPFile;
+	if (header.flags & (1<<BITFLAG_EXTENDED))
+		return ADFResult::adfrBadSCPFile;
+
+	const DWORD fluxMultiplier = (header.timeBase + 1) * 25;
+
+	// Read the offsets table
+	std::vector<uint32_t> trackOffsets;
+	trackOffsets.resize(168);
+	try {
+		hADFFile.read((char*)trackOffsets.data(), sizeof(uint32_t) * trackOffsets.size());
+	}
+	catch (...) {
+		hADFFile.close();
+		return ADFResult::adfrFileIOError;
+	}
+
+	// Now write the tracks.
+	for (unsigned int track = header.startTrack; track <= header.endTrack; track++) {
+		// Lets get into the cotrrect position
+		if (m_device.selectTrack(track / 2) != DiagnosticResponse::drOK) return ADFResult::adfrDriveError;
+		if (m_device.selectSurface((track & 1) ? DiskSurface::dsUpper : DiskSurface::dsLower) != DiagnosticResponse::drOK) return ADFResult::adfrDriveError;
+		if (callback)
+			if (callback(track / 2, (track & 1) ? DiskSurface::dsUpper : DiskSurface::dsLower, false, CallbackOperation::coWriting)== WriteResponse::wrAbort) return ADFResult::adfrAborted;
+
+
+		// Find the track data
+		hADFFile.seekp(trackOffsets[track], std::fstream::beg);
+
+		SCPTrackInMemory trk;
+
+		// Read the header
+		try {
+			hADFFile.read((char*)&trk.header, sizeof(trk.header));
+		}
+		catch (...) {
+			hADFFile.close();
+			return ADFResult::adfrFileIOError;
+		}
+		if (trk.header.trackNumber != track) return ADFResult::adfrBadSCPFile;
+		if ((trk.header.headerTRK[0] != 'T') || (trk.header.headerTRK[1] != 'R') || (trk.header.headerTRK[2] != 'K')) return ADFResult::adfrBadSCPFile;
+
+		// Now read in the track info
+		for (int r = 0; r < header.numRevolutions; r++) {
+			SCPTrackRevolution rev;
+			try {
+				hADFFile.read((char*)&rev, sizeof(SCPTrackRevolution));
+				trk.revolution.push_back(rev);
+			}
+			catch (...) {
+				hADFFile.close();
+				return ADFResult::adfrFileIOError;
+			}
+		}
+
+		std::vector<DWORD> actualFluxTimes;
+		{
+
+			SCPTrackData allData;
+			// And now read in their data
+			for (int r = 0; r < header.numRevolutions; r++) {
+				// Goto the data
+				hADFFile.seekp(trk.revolution[r].dataOffset + trackOffsets[track], std::fstream::beg);
+
+				allData.resize(trk.revolution[r].trackLength);
+				trk.revolution[r].dataOffset = actualFluxTimes.size();  // for use later on
+				try {
+					hADFFile.read((char*)allData.data(), trk.revolution[r].trackLength * 2);
+					// Convert allData into proper flux times in nanoseconds
+					// Move the first sample to the end as its sometimes incorrect
+					DWORD lastTime = 0;
+					for (const uint16_t t : allData) {
+						const uint16_t t2 = htons(t);  // paws naidne
+						if (t2 == 0) lastTime += 65536; else {
+							DWORD totalFlux = (lastTime + t2) * fluxMultiplier;							
+							actualFluxTimes.push_back(totalFlux);
+							lastTime = 0;
+						}
+					}
+
+					trk.revolution[r].trackLength = actualFluxTimes.size() - trk.revolution[r].dataOffset;
+				}
+				catch (...) {
+					hADFFile.close();
+					return ADFResult::adfrFileIOError;
+				}
+			}
+		}
+
+		// Now compute a master flux times structure from the data for all three.  They *should* all be the same length
+		int revolutionToWrite = header.numRevolutions ? 1 : 0;
+		std::vector<DWORD> masterTimes;
+		for (DWORD i = 0; i < trk.revolution[revolutionToWrite].trackLength; i++) {
+			masterTimes.push_back(actualFluxTimes[i+ trk.revolution[revolutionToWrite].dataOffset]);
+		}
+
+		if (extraErases) {
+			m_device.eraseCurrentTrack();
+			m_device.eraseFluxOnTrack();
+		}
+		m_device.eraseFluxOnTrack();
+		DiagnosticResponse r = m_device.writeFlux(masterTimes, driveRPM, true);
+		if ((r == DiagnosticResponse::drFramingError) || (r == DiagnosticResponse::drSerialOverrun)) {
+			// Retry
+			m_device.eraseFluxOnTrack();
+			r = m_device.writeFlux(masterTimes, driveRPM, true);
+		}
+		if (r == DiagnosticResponse::drMediaTypeMismatch) return ADFResult::adfrMediaSizeMismatch;
+		if (r != DiagnosticResponse::drOK) return ADFResult::adfrDriveError;	
+	}
+
+	return ADFResult::adfrComplete;
+}
+
 
 // Reads the disk and write the data to the ADF file supplied.  The callback is for progress, and you can returns FALSE to abort the process
 ADFResult ADFWriter::DiskToADF(const std::wstring& outputFile, const bool inHDMode, const unsigned int numTracks, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound, const int maxSectors, const CallbackOperation operation)> callback) {
@@ -2035,6 +2212,308 @@ ADFResult ADFWriter::DiskToADF(const std::wstring& outputFile, const bool inHDMo
 
 	return includesBadSectors ? ADFResult::adfrCompletedWithErrors : ADFResult::adfrComplete;
 }
+
+struct WeakData {
+	UDWORD start, size;
+};
+
+enum class BitType : uint8_t {
+	btOff = 0,
+	btOn = 1,
+	btWeak = 2
+};
+
+// Converts a density value for a single bit-cell (1000=2us) in ns
+#define DensityToNS(densityValue) ((2000UL * densityValue) / 1000UL)
+#define IDEAL_RPM_NS 
+
+struct IPFData {
+	uint16_t density = 1000;
+	BitType bit;
+};
+
+// So, DrawBridge was around before things like Greaseweazle... seems only fair I should get some help from its source code.
+// Whilst this is not a copy of the functions used by it, I have taken some inspiration from it. credit where credit is due.
+// 
+// Writes an IPF file back to a floppy disk.  Return FALSE in the callback to abort this operation.  
+ADFResult ADFWriter::IPFToDisk(const std::wstring& inputFile, bool extraErases, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError, const CallbackOperation operation) > callback) {
+	if (!m_device.isOpen()) return ADFResult::adfrDriveError;
+	ArduinoFloppyReader::FirmwareVersion version = m_device.getFirwareVersion();
+	if ((version.major == 1) && ((version.minor < 9) || ((version.minor == 9) && (version.buildNumber < 18)))) return ADFResult::adfrFirmwareTooOld;
+
+	m_device.checkForDisk(true);
+	if (!m_device.isDiskInDrive()) return ADFResult::adfrDriveError;
+
+	// Get drive RPM
+	float driveRPM = 300.0f;
+#ifndef _DEBUG
+	if (m_device.measureDriveRPM(driveRPM) != DiagnosticResponse::drOK) return ADFResult::adfrDriveError;
+#else
+	driveRPM = 301;
+#endif
+
+	// Initialize caps
+	if (CapsInit()!= imgeOk) return ADFResult::adfrIPFLibraryNotAvailable;
+
+	SDWORD image = CapsAddImage();
+	if (image<0) return ADFResult::adfrIPFLibraryNotAvailable;
+
+	std::string inputFileA;
+	quickw2a(inputFile, inputFileA);
+
+	// Load the image
+	if (CapsLockImage(image, (PCHAR)inputFileA.c_str()) != imgeOk) {
+		CapsRemImage(image);
+		return  ADFResult::adfrIPFLibraryNotAvailable;
+	}
+
+	// Load the image
+	if (CapsLoadImage(image, DI_LOCK_DENVAR | DI_LOCK_UPDATEFD | DI_LOCK_TYPE | DI_LOCK_OVLBIT | DI_LOCK_TRKBIT) != imgeOk) {
+		CapsRemImage(image);
+		return  ADFResult::adfrIPFLibraryNotAvailable;
+	}
+
+	CapsImageInfo fileInfo;
+	// get image information
+	if (CapsGetImageInfo(&fileInfo, image) != imgeOk) {
+		CapsUnlockImage(image);
+		CapsRemImage(image);
+		return  ADFResult::adfrFileError;
+	}
+
+	std::vector<IPFData> data;
+	std::vector<DWORD> flux;
+
+	const uint64_t rpmNanoSeconds = (uint64_t)(60000000000.0f / driveRPM);
+
+	for (size_t cyl = fileInfo.mincylinder; cyl <= min(fileInfo.maxcylinder,81); cyl++) {
+
+		// Lets get into the cotrrect position
+		if (m_device.selectTrack((unsigned char)cyl) != DiagnosticResponse::drOK) {
+			CapsUnlockImage(image);
+			CapsRemImage(image);
+			return ADFResult::adfrDriveError;
+		}
+		
+		for (DWORD head = fileInfo.minhead; head <= fileInfo.maxhead; head++) {
+			if (m_device.selectSurface(head ? DiskSurface::dsUpper : DiskSurface::dsLower) != DiagnosticResponse::drOK) {
+				CapsUnlockImage(image);
+				CapsRemImage(image);
+				return ADFResult::adfrDriveError;
+			}
+
+			if (callback)
+				if (callback(cyl, head ? DiskSurface::dsUpper : DiskSurface::dsLower, false, CallbackOperation::coWriting) == WriteResponse::wrAbort) {
+					CapsUnlockImage(image);
+					CapsRemImage(image);
+					return ADFResult::adfrAborted;
+				}
+
+			// Read information about this from the library
+			CapsTrackInfoT2 trackInfo = { 0 };
+			trackInfo.type = 2;
+			if (CapsLockTrack((PCAPSTRACKINFO)&trackInfo, image, cyl, head, DI_LOCK_DENVAR | DI_LOCK_UPDATEFD | DI_LOCK_TYPE | DI_LOCK_OVLBIT | DI_LOCK_TRKBIT) != imgeOk) {
+				CapsUnlockImage(image);
+				CapsRemImage(image);
+				return  ADFResult::adfrFileError;
+			}
+
+			// Check for unformatted/empty track
+			if ((trackInfo.trackbuf == nullptr) || (trackInfo.tracklen<1)) {
+				// Unformatted track
+				if (m_device.eraseFluxOnTrack() != DiagnosticResponse::drOK) {
+					CapsUnlockTrack(image, cyl, head);
+					CapsUnlockImage(image);
+					CapsRemImage(image);
+					return ADFResult::adfrDriveError;
+				}
+
+				// Done here!
+				continue;
+			}
+
+			// Convert the trackbuf to a structure we can handle, whilst offsetting everything for the "splice" (where the track starts and stops)	
+			data.clear();
+			for (size_t i = 0; i < trackInfo.tracklen; i++) {
+				int outPos = (i + trackInfo.overlap) % trackInfo.tracklen;
+				if (outPos < 0) outPos += trackInfo.tracklen;
+				size_t bytePos = outPos / 8;
+				uint16_t density = 1000;
+
+				if ((trackInfo.timebuf) && (trackInfo.timelen) && (bytePos < trackInfo.timelen)) {
+					density = (uint16_t)trackInfo.timebuf[bytePos];
+				}
+				data.push_back({ density, (trackInfo.trackbuf[bytePos] & (1 << (7-(outPos & 7)))) ? BitType::btOn : BitType::btOff });
+			}
+
+			// Handle 'weak bits'
+			std::vector<WeakData> weakList;
+			for (size_t weak = 0; weak < trackInfo.weakcnt; weak++) {
+				CapsDataInfo wInfo;
+				if (CapsGetInfo(&wInfo, image, cyl, head, cgiitWeak, weak) != imgeOk) {
+					CapsUnlockTrack(image, cyl, head);
+					CapsUnlockImage(image);
+					CapsRemImage(image);
+					return ADFResult::adfrIPFLibraryNotAvailable;
+				}
+
+				// Add weak-list compensated for overlap position
+				int previousBit = ((wInfo.start -1) - trackInfo.overlap) % trackInfo.tracklen; if (previousBit < 0) previousBit += trackInfo.tracklen;
+				size_t startPos = 0;
+
+				// Previous bit is 'on', force the first 'weak' bit to be off regardless
+				if (data[previousBit].bit == BitType::btOn) {
+					startPos++;
+					previousBit++;
+					previousBit %= trackInfo.tracklen;
+					data[previousBit].bit = BitType::btOff;
+				}
+				for (size_t bitPos = startPos; bitPos < wInfo.size; bitPos++) {
+					int outPos = (wInfo.start - trackInfo.overlap) % trackInfo.tracklen;
+					if (outPos < 0) outPos += trackInfo.tracklen;
+					data[outPos].bit = BitType::btWeak;
+				}
+				int endingWeakBit = (wInfo.start + (wInfo.size-1) - trackInfo.overlap) % trackInfo.tracklen; if (endingWeakBit<0) endingWeakBit+= trackInfo.tracklen;
+				int nextBit = (wInfo.start + wInfo.size - trackInfo.overlap) % trackInfo.tracklen; if (nextBit < 0) nextBit += trackInfo.tracklen;
+				
+				// Ensure we dont leave weak bits next to the actual data
+				if (data[nextBit].bit == BitType::btOn) data[endingWeakBit].bit = BitType::btOff;
+			}
+
+			// Now convert this data into flux timings, based on the data
+			flux.clear();
+			DWORD fluxSoFar = 0;
+			DWORD fluxSoFarOut = 0;
+			DWORD numbits = 0;
+			int64_t fluxTimeAtOverlap = 0;
+			int overlapPos = trackInfo.overlap % trackInfo.tracklen;
+			if (overlapPos < 0) overlapPos += trackInfo.tracklen;
+			uint64_t totalTime = 0;
+
+			for (size_t i = 0; i < data.size(); i++) {
+				size_t time = (DWORD)DensityToNS(data[i].density);
+				fluxSoFar += time;
+				fluxSoFarOut = 0;
+				numbits++;
+
+				// Flux of some kind
+				switch (data[i].bit) {
+				case BitType::btOff: 
+					break; // we dont care
+
+				case BitType::btOn: 
+					flux.push_back(fluxSoFar);
+					fluxSoFarOut = fluxSoFar;
+					fluxSoFar = 0; 
+					numbits = 0;  
+					break;
+
+				case BitType::btWeak: 
+					if (numbits < 400) {						
+						// Just push an extra long 'no flux' region
+						if (fluxSoFar >= 3750) {
+							flux.push_back(fluxSoFar);
+							fluxSoFarOut = fluxSoFar;
+						}
+					}
+					else {
+						// Create fuzzy bits where bits are on the boundary of where they should be
+						fluxSoFarOut = 0;
+						while (fluxSoFar > 39000) {
+							// Get the PLL in sync
+							flux.push_back(8000);    // 0001
+							flux.push_back(8000);    // 0001
+							flux.push_back(6000);    // 001
+							flux.push_back(4000);    // 01
+							// Then screw with it
+							flux.push_back(5000);    // 01 or 001?
+							// And go back to normal
+							flux.push_back(4000);    // likewise, this may also confuse it
+							flux.push_back(4000);    // 01 back to normal
+							fluxSoFar -= 39000;
+							fluxSoFarOut += 39000;
+						}
+
+						// See how much flux time is left
+						if (fluxSoFar >= 3750) {
+							flux.push_back(fluxSoFar);
+							fluxSoFarOut += fluxSoFar;
+						}
+					}
+					fluxSoFar = 0;
+					numbits = 0;
+					break;
+				} 
+
+				// Count flux up until the index
+				if (i <= (DWORD)overlapPos)
+					fluxTimeAtOverlap += (int64_t)fluxSoFarOut;
+
+				totalTime += fluxSoFarOut;
+			}
+			// This belongs at the start
+			if (fluxSoFar) {
+				flux[0] += fluxSoFar;
+				fluxTimeAtOverlap -= fluxSoFar;
+			}
+
+			// Data is gap aligned. So add extra to the gap to ensure it fills the disk.
+
+			// Is splice at the index point?
+			bool terminateAtIndex = false;
+			if ((overlapPos <= 4) || (overlapPos >= (int)(data.size() - 4))) {
+				// Ensure theres more data than needed by repeating the last few flux transitions a little slower
+				size_t startPoint = flux.size() - 15;
+				unsigned int count = 0;
+				while (totalTime < 220000000) {
+					count = (count + 1) & 15;
+					DWORD t = (DWORD)(flux[startPoint + count] * 1.1f);
+					flux.push_back(t);
+					totalTime += t;
+				}
+
+				// Yes.  This is INDEX to INDEX mode.
+				terminateAtIndex = true;
+			}
+			else {
+				// No.  This is INDEX+Delay
+				terminateAtIndex = false;
+				// We need to add some padding onto the start of the track so we write from the index up until this point.
+				size_t index = 0;
+				while (fluxTimeAtOverlap > 3000) {
+					// Insert at the front, the tail from the end backwards
+					flux.insert(flux.begin(), flux[index]);
+					fluxTimeAtOverlap -= flux[index];
+					index++;
+				}
+			}
+
+			// Now write the track
+			if (extraErases) {
+				m_device.eraseCurrentTrack();
+				m_device.eraseFluxOnTrack();
+			}
+			m_device.eraseFluxOnTrack();
+			DiagnosticResponse r = m_device.writeFlux(flux, driveRPM, false, terminateAtIndex);
+			if ((r == DiagnosticResponse::drFramingError) || (r == DiagnosticResponse::drSerialOverrun)) {
+				// Retry
+				m_device.eraseFluxOnTrack();
+				r = m_device.writeFlux(flux, driveRPM, false);
+			}			
+			if (r != DiagnosticResponse::drOK) return ADFResult::adfrDriveError;
+						
+			CapsUnlockTrack(image, cyl, head);
+		}
+	}
+
+	CapsUnlockImage(image);
+	CapsRemImage(image);
+
+	return ADFResult::adfrComplete;
+	
+
+}
+
 
 
 // Attempt to work out what the density of the currently inserted disk is

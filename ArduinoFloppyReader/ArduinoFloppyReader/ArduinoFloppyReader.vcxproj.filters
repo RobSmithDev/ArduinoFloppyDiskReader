@@ -13,6 +13,12 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="Header Files\IPF">
+      <UniqueIdentifier>{b041ff34-0296-43fa-b654-346ad649cbee}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\IPF">
+      <UniqueIdentifier>{4ae71347-0347-4087-b235-6bd6d5f712f2}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="targetver.h">
@@ -33,6 +39,18 @@
     <ClInclude Include="..\lib\ftdi.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\lib\capsapi\CapsAPI.h">
+      <Filter>Header Files\IPF</Filter>
+    </ClInclude>
+    <ClInclude Include="..\lib\capsapi\CapsLib.h">
+      <Filter>Header Files\IPF</Filter>
+    </ClInclude>
+    <ClInclude Include="..\lib\capsapi\CapsPlug.h">
+      <Filter>Header Files\IPF</Filter>
+    </ClInclude>
+    <ClInclude Include="..\lib\capsapi\Comtype.h">
+      <Filter>Header Files\IPF</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Main.cpp">
@@ -52,6 +70,9 @@
     </ClCompile>
     <ClCompile Include="..\lib\ftdi.cpp">
       <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\lib\capsapi\CapsPlug.cpp">
+      <Filter>Source Files\IPF</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

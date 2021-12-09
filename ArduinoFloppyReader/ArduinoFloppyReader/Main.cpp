@@ -87,15 +87,16 @@ struct SettingName {
 	const char* description;
 };
 
-#define MAX_SETTINGS 4
+#define MAX_SETTINGS 5
 
 // All Settings
 const SettingName AllSettings[MAX_SETTINGS] = {
 	{L"DISKCHANGE","Force DiskChange Detection Support (used if pin 12 is not connected to GND)"},
 	{L"PLUS","Set DrawBridge Plus Mode (when Pin 4 and 8 are swapped for improved accuracy)"},
 	{L"ALLDD","Force All Disks to be Detected as Double Density (faster if you don't need HD support)"},
-	{L"SLOW","Use Slower Disk Seeking (for slow head-moving floppy drives - rare)"}
-}; 
+	{L"SLOW","Use Slower Disk Seeking (for slow head-moving floppy drives - rare)"},
+	{L"INDEX","Always Index-Align Writing to Disks (not recommended unless you know what you are doing)"}
+};
 
 // Stolen from https://stackoverflow.com/questions/11635/case-insensitive-string-comparison-in-c
 // A wide-string case insensative compare of strings
@@ -119,6 +120,7 @@ void internalListSettings(ArduinoFloppyReader::ArduinoInterface& io) {
 		case 1:io.eeprom_IsDrawbridgePlusMode(value); break;
 		case 2:io.eeprom_IsDensityDetectDisabled(value); break;
 		case 3:io.eeprom_IsSlowSeekMode(value); break;
+		case 4:io.eeprom_IsIndexAlignMode(value); break;
 		}
 		printf("[%s] %ls \t%s\n", value ? "X" : " ", AllSettings[a].name, AllSettings[a].description);
 	}
@@ -171,6 +173,7 @@ void programmeSetting(const std::wstring& port, const std::wstring& settingName,
 			case 1:io.eeprom_SetDrawbridgePlusMode(settingValue); break;
 			case 2:io.eeprom_SetDensityDetectDisabled(settingValue); break;
 			case 3:io.eeprom_SetSlowSeekMode(settingValue); break;
+			case 4:io.eeprom_SetIndexAlignMode(settingValue); break;
 			}
 
 			printf("Settng Set.  Current settings are now:\n\n");
@@ -183,63 +186,139 @@ void programmeSetting(const std::wstring& port, const std::wstring& settingName,
 
 
 
-// Read an ADF file and write it to disk
+// Read an ADF/SCP/IPF file and write it to disk
 void adf2Disk(const std::wstring& filename, bool verify) {
-	printf("\nWrite disk from ADF mode\n\n");
-	if (!verify) printf("WARNING: It is STRONGLY recommended to write with verify support turned on.\r\n\r\n");
 
 	bool hdMode = false;
+	bool isSCP = true;
+	bool isIPF = false;
+
+	const wchar_t* extension = wcsrchr(filename.c_str(), L'.');
+	if (extension) {
+		extension++;
+		isSCP = iequals(extension, L"SCP");
+		isIPF = iequals(extension, L"IPF");
+	}
+	if (isIPF) printf("\nWrite disk from IPF mode\n\n"); else
+	if (isSCP) printf("\nWrite disk from SCP mode\n\n"); else {
+		printf("\nWrite disk from ADF mode\n\n");
+		if (!verify) printf("WARNING: It is STRONGLY recommended to write with verify support turned on.\r\n\r\n");
+	} 
+
 
 	// Detect disk speed
 	const ArduinoFloppyReader::FirmwareVersion v = writer.getFirwareVersion();
 
 	if (((v.major == 1) && (v.minor >= 9)) || (v.major > 1)) {
-		if (writer.GuessDiskDensity(hdMode) != ArduinoFloppyReader::ADFResult::adfrComplete) {
-			printf("Unable to work out the density of the disk inserted.\n");
-			return;
-		}
+		if ((!isSCP) && (!isIPF))
+			if (writer.GuessDiskDensity(hdMode) != ArduinoFloppyReader::ADFResult::adfrComplete) {
+				printf("Unable to work out the density of the disk inserted.\n");
+				return;
+			}
 	}
 
-	ADFResult result = writer.ADFToDisk(filename, hdMode, verify,true, false,true, [](const int currentTrack, const DiskSurface currentSide, bool isVerifyError, const CallbackOperation operation) ->WriteResponse {
-		if (isVerifyError) {
-			char input;
-			do {
-				printf("\rDisk write verify error on track %i, %s side. [R]etry, [S]kip, [A]bort?                                   ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
+	ADFResult result;
+	
+	if (isIPF) {
+		result = writer.IPFToDisk(filename, false, [](const int currentTrack, const DiskSurface currentSide, bool isVerifyError, const CallbackOperation operation) ->WriteResponse {
+			if (isVerifyError) {
+				char input;
+				do {
+					printf("\rDisk write verify error on track %i, %s side. [R]etry, [S]kip, [A]bort?                                   ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
 #ifdef _WIN32
-				input = toupper(_getch());
+					input = toupper(_getch());
 #else
-				input = toupper(_getChar());
+					input = toupper(_getChar());
 #endif	
-			} while ((input != 'R') && (input != 'S') && (input != 'A'));
-			
-			switch (input) {
-			case 'R': return WriteResponse::wrRetry;
-			case 'I': return WriteResponse::wrSkipBadChecksums;
-			case 'A': return WriteResponse::wrAbort;
+				} while ((input != 'R') && (input != 'S') && (input != 'A'));
+
+				switch (input) {
+				case 'R': return WriteResponse::wrRetry;
+				case 'I': return WriteResponse::wrSkipBadChecksums;
+				case 'A': return WriteResponse::wrAbort;
+				}
 			}
-		}
-		printf("\rWriting Track %i, %s side     ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
+			printf("\rWriting Track %i, %s side     ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
 #ifndef _WIN32
-		fflush(stdout);		
+			fflush(stdout);
 #endif		
-		return WriteResponse::wrContinue;
-	});
+			return WriteResponse::wrContinue;
+			});
+	}
+	else 
+	if (isSCP) {
+		result = writer.SCPToDisk(filename, false, [](const int currentTrack, const DiskSurface currentSide, bool isVerifyError, const CallbackOperation operation) ->WriteResponse {
+			if (isVerifyError) {
+				char input;
+				do {
+					printf("\rDisk write verify error on track %i, %s side. [R]etry, [S]kip, [A]bort?                                   ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
+#ifdef _WIN32
+					input = toupper(_getch());
+#else
+					input = toupper(_getChar());
+#endif	
+				} while ((input != 'R') && (input != 'S') && (input != 'A'));
+
+				switch (input) {
+				case 'R': return WriteResponse::wrRetry;
+				case 'I': return WriteResponse::wrSkipBadChecksums;
+				case 'A': return WriteResponse::wrAbort;
+				}
+			}
+			printf("\nWriting Track %i, %s side     ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
+#ifndef _WIN32
+			fflush(stdout);
+#endif		
+			return WriteResponse::wrContinue;
+			});
+	} else {
+		result = writer.ADFToDisk(filename, hdMode, verify, true, false, true, [](const int currentTrack, const DiskSurface currentSide, bool isVerifyError, const CallbackOperation operation) ->WriteResponse {
+			if (isVerifyError) {
+				char input;
+				do {
+					printf("\nDisk write verify error on track %i, %s side. [R]etry, [S]kip, [A]bort?                                   ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
+#ifdef _WIN32
+					input = toupper(_getch());
+#else
+					input = toupper(_getChar());
+#endif	
+				} while ((input != 'R') && (input != 'S') && (input != 'A'));
+
+				switch (input) {
+				case 'R': return WriteResponse::wrRetry;
+				case 'I': return WriteResponse::wrSkipBadChecksums;
+				case 'A': return WriteResponse::wrAbort;
+				}
+			}
+			printf("\nWriting Track %i, %s side     ", currentTrack, (currentSide == DiskSurface::dsUpper) ? "Upper" : "Lower");
+#ifndef _WIN32
+			fflush(stdout);
+#endif		
+			return WriteResponse::wrContinue;
+			});
+	}	
 
 	switch (result) {
-	case ADFResult::adfrComplete:					printf("\rADF file written to disk                                                           "); break;
-	case ArduinoFloppyReader::ADFResult::adfrExtendedADFNotSupported:	printf("\rExtended ADF files are not currently supported.                                    "); break;
-	case ArduinoFloppyReader::ADFResult::adfrMediaSizeMismatch:			if (hdMode)
-																			printf("\rDisk in drive was detected as HD, but a DD ADF file supplied.                      "); else
-																			printf("\rDisk in drive was detected as DD, but an HD ADF file supplied.                     ");
-																		break;
-	case ADFResult::adfrFirmwareTooOld:             printf("\rCannot write this file, you need to upgrade the firmware first.                    "); break;
-	case ADFResult::adfrCompletedWithErrors:		printf("\rADF file written to disk but there were errors during verification                 "); break;
-	case ADFResult::adfrAborted:					printf("\rWriting ADF file to disk                                                           "); break;
-	case ADFResult::adfrFileError:					printf("\rError opening ADF file.                                                            "); break;
-	case ADFResult::adfrDriveError:					printf("\rError communicating with the Arduino interface.                                    "); 
+	case ADFResult::adfrBadSCPFile:				    printf("\nBad, invalid or unsupported SCP file                                               "); break;
+	case ADFResult::adfrComplete:					printf("\nFile written to disk                                                               "); break;
+	case ADFResult::adfrExtendedADFNotSupported:	printf("\nExtended ADF files are not currently supported.                                    "); break;
+	case ADFResult::adfrMediaSizeMismatch:			if (isIPF)
+														printf("\nIPF writing is only supported for DD disks and images                          "); else
+													if (isSCP)
+														printf("\nSCP writing is only supported for DD disks and images                             "); else
+													if (hdMode)
+														printf("\nDisk in drive was detected as HD, but a DD ADF file supplied.                      "); else
+														printf("\nDisk in drive was detected as DD, but an HD ADF file supplied.                     ");
+													break;
+	case ADFResult::adfrFirmwareTooOld:             printf("\nCannot write this file, you need to upgrade the firmware first.                    "); break;
+	case ADFResult::adfrCompletedWithErrors:		printf("\nFile written to disk but there were errors during verification                      "); break;
+	case ADFResult::adfrAborted:					printf("\nWriting aborted                                                                    "); break;
+	case ADFResult::adfrFileError:					printf("\nError opening file.                                                                "); break;
+	case ADFResult::adfrIPFLibraryNotAvailable:		printf("\nIPF CAPSImg from Software Preservation Society Library Missing                     "); break;
+	case ADFResult::adfrDriveError:					printf("\nError communicating with the DrawBridge interface.                                 ");
 													printf("\n%s                                                  ", writer.getLastError().c_str()); break;
-	case ADFResult::adfrDiskWriteProtected:			printf("\rError, disk is write protected!                                                    "); break;
-	default:										printf("\rAn unknown error occured                                                           "); break;
+	case ADFResult::adfrDiskWriteProtected:			printf("\nError, disk is write protected!                                                    "); break;
+	default:										printf("\nAn unknown error occured                                                           "); break;
 	}
 }
 
@@ -365,7 +444,7 @@ int wmain(int argc, wchar_t* argv[], wchar_t *envp[])
 int main(int argc, char* argv[], char *envp[])
 #endif
 {
-	printf("DrawBridge aka Arduino Floppy Disk Reader/Writer V2.7, Copyright (C) 2017-2021 Robert Smith\r\n");
+	printf("DrawBridge aka Arduino Floppy Disk Reader/Writer V2.8.4, Copyright (C) 2017-2021 Robert Smith\r\n");
 	printf("Full sourcecode and documentation at https://amiga.robsmithdev.co.uk\r\n");
 	printf("This is free software licenced under the GNU General Public Licence V3\r\n\r\n");
 
@@ -377,6 +456,10 @@ int main(int argc, char* argv[], char *envp[])
 		printf("ArduinoFloppyReader <COMPORT> OutputFilename.SCP [READ]\r\n\r\n");
 		printf("To write an ADF file to disk:\r\n");
 		printf("ArduinoFloppyReader <COMPORT> InputFilename.ADF WRITE [VERIFY]\r\n\r\n");
+		printf("To write an SCP file to disk:\r\n");
+		printf("ArduinoFloppyReader <COMPORT> InputFilename.SCP WRITE\r\n\r\n");
+		printf("To write an IPF file to disk:\r\n");
+		printf("ArduinoFloppyReader <COMPORT> InputFilename.IPF WRITE\r\n\r\n");
 		printf("To start interface diagnostics:\r\n");
 		printf("ArduinoFloppyReader <COMPORT> DIAGNOSTIC\r\n\r\n");
 		printf("To see the current EEPROM Ssettings:\r\n");
