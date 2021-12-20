@@ -44,6 +44,8 @@ For further details including how to wire this up please visit
 [https://amiga.robsmithdev.co.uk] or join the discussion on discord at [https://discord.gg/HctVgSFEXu]
 
 # Whats changed?
+* v2.8.5 Improved IPF support for non-index aligned images (SCP and IPF writing needs 1.9.21 firmware)
+         Added warning if known applications are running that may be using the serial port
 * v2.8.4 Support for forcing Index Alignment of all writes, even in emulators (only for use if you know what you are doing)
          Added a timeout when connecting and syncing with the port
 * v2.8.3 Better handling with the 'gap' or 'splice' within IPF files

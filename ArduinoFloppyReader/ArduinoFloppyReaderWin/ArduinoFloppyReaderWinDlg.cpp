@@ -36,14 +36,16 @@
 #include "CRunningDlg.h"
 #include "CCompleteDialog.h"
 #include <WinSock2.h>
+#include <wtsapi32.h>
 
 #define EVENT_ID_RESCAN			((UINT_PTR)100)
 #define EVENT_ID_BLINK			((UINT_PTR)101)
 #define EVENT_RESCAN_INTERVAL	100
 
-static const WCHAR* footerStringNormal = L"DrawBridge %i.%i.%i, Created by Robert Smith(RobSmithDev) https://amiga.robsmithdev.co.uk";
+static const WCHAR* footerStringNormal = L"DrawBridge %i.%i.%i, Created by Robert Smith (RobSmithDev) https://amiga.robsmithdev.co.uk";
 static const WCHAR* footerStringUpdate = L"DrawBridge %i.%i.%i, Update Available (V%i.%i.%i) at https://amiga.robsmithdev.co.uk";
 
+#pragma comment(lib,"Wtsapi32.lib")
 
 // CArduinoFloppyReaderWinDlg dialog
 CArduinoFloppyReaderWinDlg::CArduinoFloppyReaderWinDlg(CWnd* pParent /*=NULL*/)
@@ -307,6 +309,40 @@ void CArduinoFloppyReaderWinDlg::OnPaint()
 	}
 }
 
+// Attempt to work out what is using the com port we want
+void CArduinoFloppyReaderWinDlg::findWhatIsUsingThePort() {
+	std::wstring procname;
+
+	WTS_PROCESS_INFO* pWPIs = NULL;
+	DWORD dwProcCount = 0;
+	if (WTSEnumerateProcesses(WTS_CURRENT_SERVER_HANDLE, NULL, 1, &pWPIs, &dwProcCount))
+	{
+		for (DWORD i = 0; i < dwProcCount; i++) {
+			std::wstring procn = pWPIs[i].pProcessName;
+			for (auto& c : procn) c = towupper(c);
+			
+			if (procn == L"HXCFLOPPYEMULATOR.EXE") {
+				procname = L"HxCFloppyEmulator";
+				break;
+			}
+			if (procn == L"CURA.EXE") {
+				procname = L"Ultimaker Cura";
+				break;
+			}
+
+		}
+	}
+	if (pWPIs) WTSFreeMemory(pWPIs);
+
+	if (procname.length()) {
+		procname = L"Unable to connect to this COM port.\n\n" + procname + L" is using it.\n\nPlease close this application and try again.";
+		MessageBox(procname.c_str(), L"Error", MB_OK | MB_ICONEXCLAMATION);
+	}
+	else {
+		MessageBox(L"Unable to connect to this COM port. Another application is using it.", L"Error", MB_OK | MB_ICONEXCLAMATION);
+	}
+}
+
 // The system calls this function to obtain the cursor to display while the user drags
 //  the minimized window.
 HCURSOR CArduinoFloppyReaderWinDlg::OnQueryDragIcon()
@@ -323,9 +359,14 @@ void CArduinoFloppyReaderWinDlg::runThreadRead(CRunningDlg* dlg) {
 	// Try to open the com port and talk to the device
 	dlg->setStatus(L"Opening COM port and setting up device...");
 	if (!writer.openDevice(comPort)) {
-		std::string msg = "Unable to open COM port:\r\n\r\n";
-		msg += writer.getLastError();
-		MessageBoxA(GetSafeHwnd(), msg.c_str(), "Error", MB_OK | MB_ICONEXCLAMATION);
+		if (writer.getLastErrorCode() == ArduinoFloppyReader::DiagnosticResponse::drPortInUse) {
+			findWhatIsUsingThePort();
+		}
+		else {
+			std::string msg = "Unable to open COM port:\r\n\r\n";
+			msg += writer.getLastError();
+			MessageBoxA(GetSafeHwnd(), msg.c_str(), "Error", MB_OK | MB_ICONEXCLAMATION);
+		}
 		return;
 	}
 
@@ -436,9 +477,14 @@ void CArduinoFloppyReaderWinDlg::runThreadWrite(CRunningDlg* dlg) {
 	// Try to open the com port and talk to the device
 	dlg->setStatus(L"Opening COM port and setting up device...");
 	if (!writer.openDevice(comPort)) {
-		std::string msg = "Unable to open COM port:\r\n\r\n";
-		msg += writer.getLastError();
-		MessageBoxA(GetSafeHwnd(), msg.c_str(), "Error", MB_OK | MB_ICONEXCLAMATION);
+		if (writer.getLastErrorCode() == ArduinoFloppyReader::DiagnosticResponse::drPortInUse) {
+			findWhatIsUsingThePort();
+		}
+		else {
+			std::string msg = "Unable to open COM port:\r\n\r\n";
+			msg += writer.getLastError();
+			MessageBoxA(GetSafeHwnd(), msg.c_str(), "Error", MB_OK | MB_ICONEXCLAMATION);
+		}
 		return;
 	}
 
@@ -722,7 +768,8 @@ void CArduinoFloppyReaderWinDlg::OnBnClickedStartstop4()
 	SetCursor(m_crHourGlass);
 	ArduinoFloppyReader::ArduinoInterface io;
 
-	if (io.openPort(comPort) == ArduinoFloppyReader::DiagnosticResponse::drOK) {
+	ArduinoFloppyReader::DiagnosticResponse response = io.openPort(comPort);
+	if (response == ArduinoFloppyReader::DiagnosticResponse::drOK) {
 
 		ArduinoFloppyReader::FirmwareVersion version = io.getFirwareVersion();
 		if ((version.major == 1) && (version.minor < 9)) {
@@ -770,7 +817,10 @@ void CArduinoFloppyReaderWinDlg::OnBnClickedStartstop4()
 		dlgSettings.DoModal();
 	}
 	else {
-		MessageBox(_T("Unable to communicate with the COM port.  Please check port or run diagnostics."), _T("Sorry"), MB_OK | MB_ICONEXCLAMATION);
+		if (response == ArduinoFloppyReader::DiagnosticResponse::drPortInUse)
+			findWhatIsUsingThePort(); 
+		else 
+			MessageBox(_T("Unable to communicate with the COM port.  Please check port or run diagnostics."), _T("Sorry"), MB_OK | MB_ICONEXCLAMATION);
 		return;
 	}
 }

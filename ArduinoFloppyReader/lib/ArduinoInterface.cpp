@@ -1831,10 +1831,10 @@ void appendToBlock(DWORD fluxTime, DWORD& timingsExtra, Times8& currentBlock, st
 }
 
 // Writes the flux timings (in nanoseconds) to the drive.  The Drive RPM is needed to compensate and correct the flux times.
-DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTimes, const float driveRPM, bool compensateFluxTimings, bool terminateAtIndex) {
+DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTimes, const DWORD offsetFromIndex, const float driveRPM, bool compensateFluxTimings, bool terminateAtIndex) {
 	m_lastCommand = LastCommand::lcWriteFlux;
 
-	if ((m_version.major == 1) && ((m_version.minor < 9) || ((m_version.minor == 9) && (m_version.buildNumber < 18)))) {
+	if ((m_version.major == 1) && ((m_version.minor < 9) || ((m_version.minor == 9) && (m_version.buildNumber < 21)))) {
 		m_lastError = DiagnosticResponse::drOldFirmware;
 		return m_lastError;
 	}
@@ -1865,7 +1865,8 @@ DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTim
 		if (t > 4500) ddStyleCount++;
 		if (t < 3500) hdStyleCount++;
 		DWORD tmp = (t + 1000) / 2000;
-		if (t < FLUX_MINIMUM_NS) t = FLUX_MINIMUM_NS;
+		if (t < FLUX_MINIMUM_NS) 
+			t = FLUX_MINIMUM_NS;
 		t = ((t - FLUX_MINIMUM_NS) + (FLUX_MULTIPLIER_TIME_DB / 2)) / FLUX_MULTIPLIER_TIME_DB;
 		dbTime.push_back(t);
 		totalFluxTime += t + FLUX_MINIMUM_DB;
@@ -2046,7 +2047,6 @@ DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTim
 	// Byte 4 : E4  H4  G4  F4  F3  F2  F1  F0
 	// Byte 5 : H3  H2  H1  H0  G3  G2  G1  G0
 	std::vector<uint8_t> flux;
-	flux.push_back(terminateAtIndex ? 1 : 0);  
 	flux.push_back(firstFlux);   // special value to get it started
 
 	for (const Times8& block : fluxTimesGrouped) {
@@ -2076,6 +2076,20 @@ DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTim
 		return m_lastError;
 	}
 
+	// Send the offset from index in ARDUINO ticks
+	uint32_t t = ceil(((float)offsetFromIndex / (driveRPM / 300.0f)) / 62.5f);
+	// Send the three bytes containing this.
+	unsigned char amount[4];
+	amount[0] = t & 0xFF;
+	amount[1] = (t>>8) & 0xFF;
+	amount[2] = (t>>16) & 0xFF;
+	amount[3] = terminateAtIndex ? 1 : 0;   // flags
+	if (!deviceWrite((const void*)amount, 4)) {
+		m_lastError = DiagnosticResponse::drSendDataFailed;
+		return m_lastError;
+	}
+	
+	// Send the actual data
 	if (!deviceWrite((const void*)flux.data(), flux.size())) {
 		m_lastError = DiagnosticResponse::drSendDataFailed;
 		return m_lastError;

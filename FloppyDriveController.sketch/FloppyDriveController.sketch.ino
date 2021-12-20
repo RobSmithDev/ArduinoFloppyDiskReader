@@ -24,7 +24,7 @@
  *******************************************************************************************************************
  *******************************************************************************************************************/
  
-/* Latest History: Last Modified: 23/11/2021
+/* Latest History: Last Modified: 20/12/2021
     Firmware V1.4: Merged with Pull Request #6 (Modified the behavior of the current track location on Arduino boot - paulofduarte) which also addresses issues with some drives
     Firmware V1.5: Merged with Pull Request #9 (Detect and read out HD floppy disks 1.44M by kollokollo)
     Firmware V1.6: Added experimental unbuffered writing HD disk support
@@ -66,6 +66,7 @@
               v1.9.18 Added support for 'flux level' writing at arbitrary intervals and a new Flux Wipe, that doesnt write any transitions and makes the disk unformatted
               v1.9.19 Added a 'terminate at index' option when writing flux
               v1.9.20 Added EEPROM setting for 'always index align writes'
+              v1.9.21 Added an 'initial delay' option to the write flux command                
 */    
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -974,10 +975,20 @@ void writeFluxTrack() {
     } else
     writeByteToUART('Y');
 
-    // Find out the multiplier and offset we need
+    // read what the delay is, in arduino clock ticks
+    unsigned long initialDelay = 0;
+    {
+      unsigned long b1 = readByteFromUART();
+      unsigned long b2 = readByteFromUART();
+      unsigned long b3 = readByteFromUART();
+      initialDelay = b1 | (b2 << 8UL) | (b3 << 16UL);
+    }
+
+    // Find out any flags that were specified
     unsigned char flags = readByteFromUART();
     bool terminateAtIndex = (flags&1) != 0;
     bool indexTerminated = false;
+    
     unsigned char firstFlux = readByteFromUART();
     unsigned char nextFlux;  
     unsigned char timeValue; 
@@ -1007,22 +1018,56 @@ void writeFluxTrack() {
     // Enable writing.  This will start the erase head running
     PIN_WRITE_GATE_PORT&=~PIN_WRITE_GATE_MASK;
 
-    // Setup the first flux, rather than decoding, its not packed in any way
-    prepareFluxFirstTime(firstFlux);
-    digitalWrite(PIN_ACTIVITY_LED,HIGH);
-
     EICRA = bit(ISC01);       // falling edge of INT0 generates an interrupt, they are turned off, but its an easy way for us to detect a falling edge rather than monitoring a pin
-    EIFR=bit(INTF0);  // clear the register saying it detected an index pulse
-    
-    // Wait for the INDEX pulse
-    while (!(EIFR&bit(INTF0))) {};
 
-    EIFR=bit(INTF0);  // clear the register saying it detected an index pulse
+    // Setup the first flux, rather than decoding, its not packed in any way
+    digitalWrite(PIN_ACTIVITY_LED,HIGH);
+    prepareFluxFirstTime(firstFlux);
+
+    if (initialDelay>0) {
+         // Program timer 0 to use as a delay
+        TCCR0A = bit(WGM00) | bit(WGM01);   // Fast PWM again, but with no output
+        TCCR0B = bit(CS00); // Prescaler of divide by 1.  So max speed
+        OCR0A = 255;
+        OCR0B = 128;  // dont care about this
+
+        // Wait for the INDEX pulse
+        EIFR=bit(INTF0);  // clear the register saying it detected an index pulse
+        while (!(EIFR&bit(INTF0))) {};
+        TCNT0=0;   // Reset count
+        TIFR0 |= bit(TOV0); // Clear overflow register
+        EIFR=bit(INTF0);  // clear the register saying it detected an index pulse
+        
+        // We now need to pause for intialDelay clock ticks before continuing.  This is a bit rough but should be ok
+        while (initialDelay>255) {
+            // Wait for overflow
+            while (!(TIFR0 &  bit(TOV0))) {};
+            // Reset overflow
+            TIFR0 |= bit(TOV0);
+            initialDelay-=256;
+        }
+        if (initialDelay>16) {
+          // Should now be less than 256
+          OCR0A = initialDelay;
+          while (!(TIFR0 &  bit(TOV0))) {};
+        }
+        // Start the counter
+        TCCR2B = bit(WGM22)| bit(CS20);                  // WGM22 enables waveform generation.  CS20 starts the counter running at maximum speed
+        // stop this one
+        TCCR0A=0;
+        TCCR0B=0;        
+    } else {
+        EIFR=bit(INTF0);  // clear the register saying it detected an index pulse
+        
+        // Wait for the INDEX pulse
+        while (!(EIFR&bit(INTF0))) {};
+        // Start the counter
+        TCCR2B = bit(WGM22)| bit(CS20);                  // WGM22 enables waveform generation.  CS20 starts the counter running at maximum speed
+        // clear the register saying it detected an index pulse
+        EIFR=bit(INTF0);  
+    }
     if (!terminateAtIndex) EICRA = 0;   // disable if we're not using terminate at index
-
-    // Start the counter
-    TCCR2B = bit(WGM22)| bit(CS20);                  // WGM22 enables waveform generation.  CS20 starts the counter running at maximum speed
-
+    
     /*
      * Data is in the following layout, this means to read any 5-bits we only need to perform at most, a bit-test, a SWAP, AND and an OR:
      *     Bit:  7   6   5   4   3   2   1   0  variable
@@ -2692,7 +2737,7 @@ void loop() {
                                   (alwaysIndexAlignWrites ? FLAGS_INDEX_ALIGN_MODE : 0)  
                                   );
                   writeByteToUART(0);  // RFU
-                  writeByteToUART(20);  // build number
+                  writeByteToUART(21);  // build number
                   break;
   
         // Command "." means go back to track 0

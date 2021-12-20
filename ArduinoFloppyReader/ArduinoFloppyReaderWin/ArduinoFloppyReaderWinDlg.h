@@ -88,6 +88,7 @@ public:
 	void WriteToDisk();
 	void ReadFromDisk();
 	void saveComPort();
+	void findWhatIsUsingThePort();
 
 	// Returns the COM port if its valid and displays an error if not
 	std::wstring checkForComPort();

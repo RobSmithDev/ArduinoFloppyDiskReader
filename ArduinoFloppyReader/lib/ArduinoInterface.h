@@ -295,7 +295,7 @@ namespace ArduinoFloppyReader {
 		DiagnosticResponse  writeCurrentTrackPrecomp(const unsigned char* mfmData, const unsigned short numBytes, const bool writeFromIndexPulse, bool usePrecomp);
 
 		// Writes the flux timings (in nanoseconds) to the drive.  The Drive RPM is needed tp compensate and correct the flux times (if enabled).
-		DiagnosticResponse writeFlux(const std::vector<DWORD>& fluxTimes, const float driveRPM, bool compensateFluxTimings, bool terminateAtIndex = false);
+		DiagnosticResponse writeFlux(const std::vector<DWORD>& fluxTimes, const DWORD offsetFromIndex, const float driveRPM, bool compensateFluxTimings, bool terminateAtIndex = false);
 
 		// Removes all flux transitions from the current track
 		DiagnosticResponse eraseFluxOnTrack();
