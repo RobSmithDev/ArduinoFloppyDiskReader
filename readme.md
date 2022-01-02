@@ -101,7 +101,7 @@ too as follows:
 	HD (1.4 MBytes). The images usually contain a FAT12 file system which can be 
 	directly mounted by linux without any additional driver.   
 	For more information see 
-		https://github.com/kollokollo/ArduinoFloppyDiskReader/tree/new/for_linux
+		https://github.com/kollokollo/ArduinoFloppyDiskReader/tree/master/for_linux
 		They need the X11-Basic interpreter from http://x11-basic.sourceforge.net/
 
 # Commodore 1581 Disks
