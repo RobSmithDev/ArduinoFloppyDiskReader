@@ -453,7 +453,11 @@ DiagnosticResponse ArduinoInterface::internalOpenPort(const std::wstring& portNa
 	config.baudRate = 2000000;
 	config.ctsFlowControl = enableCTSflowcontrol;
 
-	if (port.configurePort(config) != SerialIO::Response::rOK) return DiagnosticResponse::drPortError;
+	if (port.configurePort(config) != SerialIO::Response::rOK)
+	{
+		port.closePort();
+		return DiagnosticResponse::drPortError;
+	}
 
 	port.setBufferSizes(16, 16);
 	port.setReadTimeouts(10, 250);
