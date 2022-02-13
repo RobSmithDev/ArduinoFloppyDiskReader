@@ -1,6 +1,6 @@
 /* ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017-2021 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2022 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This library is free software; you can redistribute it and/or
@@ -22,6 +22,11 @@
 ////////////////////////////////////////////////////////////////////////////////////////
 //
 //
+
+#define _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
+#define _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS
+
+
 #include "SerialIO.h"
 
 
@@ -31,13 +36,34 @@
 #include "RotationExtractor.h"
 #pragma comment(lib, "setupapi.lib")
 static const DEVPROPKEY DEVPKEY_Device_BusReportedDeviceDesc2 = { {0x540b947e, 0x8b40, 0x45bc, 0xa8, 0xa2, 0x6a, 0x0b, 0x89, 0x4c, 0xbd, 0xa2}, 4 };
-static const DEVPROPKEY DEVPKEY_Device_InstanceId2 = { {0x78c34fc8, 0x104a, 0x4aca, 0x9e, 0xa4, 0x52, 0x4d, 0x52, 0x99, 0x6e, 0x57}, 256 };   
+static const DEVPROPKEY DEVPKEY_Device_InstanceId2 = { {0x78c34fc8, 0x104a, 0x4aca, 0x9e, 0xa4, 0x52, 0x4d, 0x52, 0x99, 0x6e, 0x57}, 256 };
 #ifndef GUID_DEVINTERFACE_COMPORT
 DEFINE_GUID(GUID_DEVINTERFACE_COMPORT,0x86e0d1e0, 0x8089, 0x11d0, 0x9c, 0xe4, 0x08, 0x00, 0x3e, 0x30, 0x1f, 0x73);
 #endif
 
-#else
+// OS X, sigurbjornl, 20220208
+#elif defined __MACH__
 
+#include <sys/stat.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <errno.h>
+#include <cstring>
+#include <term.h>
+#include <sys/termios.h>
+#include <sys/ioctl.h>
+#include <IOKit/serial/ioss.h>
+#ifndef TIOCINQ
+#ifdef FIONREAD
+#define TIOCINQ FIONREAD
+#else
+#define TIOCINQ 0x541B
+#endif
+#endif
+
+#else
 #include <sys/stat.h>
 #include <dirent.h>
 #include <fcntl.h>
@@ -219,7 +245,7 @@ void SerialIO::enumSerialPorts(std::vector<SerialPortInformation>& serialPorts) 
 			}
 			free(devList);
 		}
-	}	
+	}
 #endif
 
 
@@ -237,7 +263,7 @@ void SerialIO::enumSerialPorts(std::vector<SerialPortInformation>& serialPorts) 
 			tmp.resize(requiredSize);
 			if (!SetupDiClassGuidsFromNameA("Ports", (LPGUID)tmp.data(), requiredSize, &requiredSize)) requiredSize = 0;
 		}
-		// Dont add duplicates
+		// Don't add duplicates
 		for (size_t c = 0; c < requiredSize; c++)
 			if (std::find(toSearch.begin(), toSearch.end(), tmp[c]) == toSearch.end())
 				toSearch.push_back(tmp[c]);
@@ -250,7 +276,7 @@ void SerialIO::enumSerialPorts(std::vector<SerialPortInformation>& serialPorts) 
 			tmp.resize(requiredSize);
 			if (!SetupDiClassGuidsFromNameA("Modem", (LPGUID)tmp.data(), requiredSize, &requiredSize)) requiredSize = 0;
 		}
-		// Dont add duplicates
+		// Don't add duplicates
 		for (size_t c = 0; c < requiredSize; c++)
 			if (std::find(toSearch.begin(), toSearch.end(), tmp[c]) == toSearch.end())
 				toSearch.push_back(tmp[c]);
@@ -296,10 +322,10 @@ void SerialIO::enumSerialPorts(std::vector<SerialPortInformation>& serialPorts) 
 						DWORD type;
 						if (SetupDiGetDeviceProperty(hDevInfoSet, &devInfo, &DEVPKEY_Device_BusReportedDeviceDesc2, &type, (PBYTE)name, 128, 0, 0)) port.productName = name;
 
-						// Instance 
+						// Instance
 						if (SetupDiGetDeviceProperty(hDevInfoSet, &devInfo, &DEVPKEY_Device_InstanceId2, &type, (PBYTE)name, 128, 0, 0)) port.instanceID = name;
 
-						// Dont add any duplicates
+						// Don't add any duplicates
 						if (std::find_if(serialPorts.begin(), serialPorts.end(), [&port](SerialPortInformation search)->bool {
 							return search.portName == port.portName;
 						}) == serialPorts.end()) serialPorts.push_back(port);
@@ -319,8 +345,8 @@ void SerialIO::enumSerialPorts(std::vector<SerialPortInformation>& serialPorts) 
 	DIR* dir = opendir("/sys/class/tty");
 	if (!dir) return;
 
-	struct dirent* entry;
-	struct stat statbuf;
+	dirent* entry;
+	struct stat statbuf{};
 
 	while ((entry = readdir(dir))) {
 		std::string deviceRoot = "/sys/class/tty/" + std::string(entry->d_name);
@@ -340,45 +366,49 @@ void SerialIO::enumSerialPorts(std::vector<SerialPortInformation>& serialPorts) 
 
 			SerialPortInformation prt;
 			quicka2w(name, prt.portName);
-			
-			std::string dirName = "/sys/class/tty/" + std::string(entry->d_name) + "/device/";
-			std::string subDir = "";
 
-			for (int i=0; i<5; i++) {
+			std::string dirName = "/sys/class/tty/" + std::string(entry->d_name) + "/device/";
+			std::string subDir;
+
+			for (int i = 0; i < 5; i++) {
 				subDir += "../";
-				std::string vidPath = dirName + "/"+subDir+"/idVendor";
+				std::string vidPath = dirName + "/";
+				vidPath.append(subDir + "/idVendor");
 
 				int file = open(vidPath.c_str(), O_RDONLY | O_CLOEXEC);
 				if (file == -1) continue;
 				FILE* fle = fdopen(file, "r");
 				int count = fscanf(fle, "%4x", &prt.vid);
 				fclose(fle);
-				if (count !=1) continue;
+				if (count != 1) continue;
 
-				vidPath = dirName + "/"+subDir+"/idProduct";
+				vidPath = dirName + "/";
+				vidPath.append(subDir + "/idProduct");
 				file = open(vidPath.c_str(), O_RDONLY | O_CLOEXEC);
 				if (file == -1) continue;
 				fle = fdopen(file, "r");
 				count = fscanf(fle, "%4x", &prt.pid);
 				fclose(fle);
-				if (count !=1) continue;
+				if (count != 1) continue;
 
-				vidPath = dirName + "/"+subDir+"/product";
+				vidPath = dirName + "/";
+				vidPath.append(subDir + "/product");
 				file = open(vidPath.c_str(), O_RDONLY | O_CLOEXEC);
 				if (file == -1) continue;
 				fle = fdopen(file, "r");
 				char* p;
 				if ((p = fgets(target, sizeof(target), fle))) {
-					if (p[strlen(p)-1] == '\n') p[strlen(p)-1] = '\0';
-					quicka2w(target, prt.productName); 
+					if (p[strlen(p) - 1] == '\n') p[strlen(p) - 1] = '\0';
+					quicka2w(target, prt.productName);
 				}
 				fclose(fle);
 
-				vidPath = dirName + "/"+subDir+"/serial";
+				vidPath = dirName + "/";
+				vidPath.append(subDir + "/serial");
 				file = open(vidPath.c_str(), O_RDONLY | O_CLOEXEC);
 				if (file == -1) continue;
 				fle = fdopen(file, "r");
-				if ((p = fgets(target, sizeof(target), fle))) quicka2w(target, prt.instanceID); 
+				if ((p = fgets(target, sizeof(target), fle))) quicka2w(target, prt.instanceID);
 				fclose(fle);
 
 				serialPorts.push_back(prt);
@@ -400,7 +430,7 @@ void SerialIO::setBufferSizes(const unsigned int rxSize, const unsigned int txSi
 
 #ifdef FTDI_D2XX_AVAILABLE
 	if (m_ftdi.isOpen()) {
-		// Larger than this size actually causes slowdowns.  This doesnt work the same as below.  Below is a buffer in Windows.  This is on the USB device I think
+		// Larger than this size actually causes slowdowns.  This doesn't work the same as below.  Below is a buffer in Windows.  This is on the USB device I think
 		m_ftdi.FT_SetUSBParameters(rxSize < 256 ? rxSize : 256, txSize);
 		return;
 	}
@@ -445,7 +475,7 @@ SerialIO::Response SerialIO::openPort(const std::wstring& portName) {
 	}
 #endif
 
-#ifdef _WIN32	
+#ifdef _WIN32
 	std::wstring path = L"\\\\.\\" + portName;
 	m_portHandle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, 0);
 	if (m_portHandle == INVALID_HANDLE_VALUE) {
@@ -455,13 +485,12 @@ SerialIO::Response SerialIO::openPort(const std::wstring& portName) {
 		default: return Response::rUnknownError;
 		}
 	}
-
 	updateTimeouts();
 	return Response::rOK;
 #else
 	std::string apath;
 	quickw2a(portName, apath);
-	m_portHandle = open(apath.c_str(), O_RDWR | O_NOCTTY | O_NDELAY);
+	m_portHandle = open(apath.c_str(), O_RDWR | O_NOCTTY);
 	if (m_portHandle == -1) {
 		switch (errno) {
 		case ENOENT: return Response::rNotFound;
@@ -530,17 +559,17 @@ SerialIO::Response SerialIO::configurePort(const Configuration& configuration) {
 	GetCommConfig(m_portHandle, &config, &comConfigSize);
 	config.dwSize = sizeof(config);
 	config.dcb.DCBlength = sizeof(config.dcb);
-	config.dcb.BaudRate = configuration.baudRate;  
-	config.dcb.ByteSize = 8;       
+	config.dcb.BaudRate = configuration.baudRate;
+	config.dcb.ByteSize = 8;
 	config.dcb.fBinary = true;
 	config.dcb.Parity = false;
 	config.dcb.fOutxCtsFlow = configuration.ctsFlowControl;
 	config.dcb.fOutxDsrFlow = false;
-	config.dcb.fDtrControl = DTR_CONTROL_ENABLE; 
+	config.dcb.fDtrControl = DTR_CONTROL_ENABLE;
 	config.dcb.fDsrSensitivity = false;
 	config.dcb.fNull = false;
 	config.dcb.fTXContinueOnXoff = false;
-	config.dcb.fRtsControl = RTS_CONTROL_ENABLE; 
+	config.dcb.fRtsControl = RTS_CONTROL_ENABLE;
 	config.dcb.fAbortOnError = false;
 	config.dcb.StopBits = 0;
 	config.dcb.fOutX = 0;
@@ -550,11 +579,11 @@ SerialIO::Response SerialIO::configurePort(const Configuration& configuration) {
 	config.dcb.fInX = 0;
 	return SetCommConfig(m_portHandle, &config, sizeof(config)) ? Response::rOK : Response::rUnknownError;
 
-#else	
+#else
 	if (tcgetattr(m_portHandle, &term) < 0) return Response::rUnknownError;
 #ifdef cfmakeraw
 	cfmakeraw(&term);
-#endif	
+#endif
 
 	term.c_iflag &= ~ (IXON | IXOFF | IXANY | IGNBRK | BRKINT | PARMRK | INPCK | ISTRIP | INLCR | IGNCR | ICRNL);
 	term.c_lflag &= ~ (ISIG | ICANON | ECHO | ECHOE | ECHONL | IEXTEN);
@@ -562,11 +591,11 @@ SerialIO::Response SerialIO::configurePort(const Configuration& configuration) {
 	term.c_cflag &= ~(HUPCL | CSIZE | PARENB | PARODD | CSTOPB);
 	term.c_cflag |= CREAD | CLOCAL | CS8;
 	term.c_iflag |= IGNPAR;
-	
-#ifdef XCASE 
+
+#ifdef XCASE
 	term.c_lflag &= ~XCASE;
 #endif
-#ifdef IUTF8 
+#ifdef IUTF8
 	term.c_iflag &= ~IUTF8;
 #endif
 #ifdef CMSPAR
@@ -603,7 +632,7 @@ SerialIO::Response SerialIO::configurePort(const Configuration& configuration) {
 	term.c_oflag &= ~OFILL;
 #endif
 
-	term.c_cc[VMIN] = 1;
+	term.c_cc[VMIN] = 0;
 	term.c_cc[VTIME] = 1;
 
 	int ctsRtsFlags = 0;
@@ -617,17 +646,17 @@ SerialIO::Response SerialIO::configurePort(const Configuration& configuration) {
 #endif
 #endif
 
-	if (configuration.ctsFlowControl) term.c_cflag |= ctsRtsFlags; else term.c_cflag &= ~ctsRtsFlags; 
+	if (configuration.ctsFlowControl) term.c_cflag |= ctsRtsFlags; else term.c_cflag &= ~ctsRtsFlags;
 
 	// Now try to set the baud rate
 	int baud = configuration.baudRate;
 #ifdef __APPLE__
 	if (ioctl(m_portHandle, IOSSIOSPEED, &baud) == -1) return Response::rUnknownError;
 #else
-if (baud == 9600) {
-	term.c_cflag &= ~CBAUD;
-	term.c_cflag |= B9600;
-} else {
+	if (baud == 9600) {
+		term.c_cflag &= ~CBAUD;
+		term.c_cflag |= B9600;
+	} else {
 #if defined(BOTHER) && defined(HAVE_STRUCT_TERMIOS2)
 	term.c_cflag &= ~CBAUD;
 	term.c_cflag |= BOTHER;
@@ -637,18 +666,18 @@ if (baud == 9600) {
 #else
 	term.c_cflag &= ~CBAUD;
 	term.c_cflag |= CBAUDEX;
-	if (cfsetspeed(&term, baud) < 0) return Response::rUnknownError; 
+	if (cfsetspeed(&term, baud) < 0) return Response::rUnknownError;
 #endif
+	}
 #endif
-}
 	// Apply that nonsense
 	tcflush (m_portHandle, TCIFLUSH);
 	if (tcsetattr(m_portHandle, TCSANOW, &term) != 0) return Response::rUnknownError;
-#ifdef ASYNC_LOW_LATENCY	
+#ifdef ASYNC_LOW_LATENCY
 	struct serial_struct serial;
-	ioctl(m_portHandle, TIOCGSERIAL, &serial); 
-	serial.flags |= ASYNC_LOW_LATENCY; 
-	ioctl(m_portHandle, TIOCSSERIAL, &serial);	
+	ioctl(m_portHandle, TIOCGSERIAL, &serial);
+	serial.flags |= ASYNC_LOW_LATENCY;
+	ioctl(m_portHandle, TIOCSSERIAL, &serial);
 #endif
 
 	setDTR(true);
@@ -673,7 +702,7 @@ bool SerialIO::checkForOverrun() {
 	}
 #endif
 
-#ifdef _WIN32 
+#ifdef _WIN32
 	DWORD errors=0;
 	COMSTAT comstatbuffer;
 
@@ -689,14 +718,14 @@ unsigned int SerialIO::getBytesWaiting() {
 	if (!isPortOpen()) return 0;
 
 #ifdef FTDI_D2XX_AVAILABLE
-	if (m_ftdi.isOpen()) {		
+	if (m_ftdi.isOpen()) {
 		DWORD queueSize = 0;
 		if (m_ftdi.FT_GetQueueStatus(&queueSize) != FTDI::FT_STATUS::FT_OK) return 0;
 		return queueSize;
 	}
 #endif
 
-#ifdef _WIN32 
+#ifdef _WIN32
 	DWORD errors;
 	COMSTAT comstatbuffer;
 
@@ -747,8 +776,8 @@ unsigned int SerialIO::write(const void* data, unsigned int dataLength) {
 	// Write with a timeout
 	while (written < dataLength) {
 		if ((timeout.tv_sec < 1) && (timeout.tv_usec < 1)) break;
-		
-		int result = select(m_portHandle + 1, NULL, &fds, NULL, &timeout);		
+
+		int result = select(m_portHandle + 1, NULL, &fds, NULL, &timeout);
 		if (result < 0) {
 			if (errno == EINTR) continue; else {
 				return 0;
@@ -756,7 +785,7 @@ unsigned int SerialIO::write(const void* data, unsigned int dataLength) {
 
 		}
 		else if (result == 0) break;
-				
+
 		result = ::write(m_portHandle, buffer, dataLength - written);
 
 		if (result < 0) {
@@ -768,15 +797,47 @@ unsigned int SerialIO::write(const void* data, unsigned int dataLength) {
 		written += result;
 		buffer += result;
 	}
-	
+
 	return written;
 #endif
 
 	return 0;
 }
 
+// A very simple, uncluttered version of the below, mainly for linux
+unsigned int SerialIO::justRead(void* data, unsigned int dataLength) {
+	if ((data == nullptr) || (dataLength == 0)) return 0;
+	if (!isPortOpen()) return 0;
+
+#ifdef FTDI_D2XX_AVAILABLE
+	if (m_ftdi.isOpen()) {
+		m_ftdi.FT_SetTimeouts(m_readTimeout + (m_readTimeoutMultiplier * dataLength), m_writeTimeout + (m_writeTimeoutMultiplier * dataLength));
+
+		DWORD dataRead = 0;
+		if (m_ftdi.FT_Read((LPVOID)data, dataLength, &dataRead) != FTDI::FT_STATUS::FT_OK) dataRead = 0;
+		return dataRead;
+	}
+#endif
+
+#ifdef _WIN32
+	DWORD read = 0;
+	if (!ReadFile(m_portHandle, data, dataLength, &read, NULL)) read = 0;
+	return read;
+#else
+	int result = ::read(m_portHandle, data, dataLength);
+
+	if (result < 0) return 0;
+
+	return (unsigned int)result;
+
+
+#endif
+
+	return 0;
+
+}
+
 // Attempts to read some data from the port.  Returns how much it actually read.
-// If readAll is TRUE then it will wait until all data has been read or an error occurs
 // Returns how much it actually read
 unsigned int SerialIO::read(void* data, unsigned int dataLength) {
 	if ((data == nullptr) || (dataLength == 0)) return 0;
@@ -831,8 +892,8 @@ unsigned int SerialIO::read(void* data, unsigned int dataLength) {
 	}
 
 	return read;
-	
-	
+
+
 #endif
 
 	return 0;

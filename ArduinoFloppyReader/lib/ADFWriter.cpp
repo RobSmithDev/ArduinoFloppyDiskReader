@@ -1,6 +1,6 @@
 /* ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017-2021 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2022 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This library is free software; you can redistribute it and/or
@@ -31,7 +31,6 @@
 // were taken from the excellent documentation by Laurent Cl�vy at http://lclevy.free.fr/adflib/adf_info.html
 // Also credits to Keith Monahan https://www.techtravels.org/tag/mfm/ regarding a bug in the MFM sector start data
 //
-// V2.7
 
 #include <vector>
 #include <algorithm>
@@ -60,6 +59,8 @@ const long long StreamMax = std::numeric_limits<std::streamsize>::max();
 #else
 #include <netdb.h>
 #endif 
+
+#include "pll.h"
 
 //#include "ftdi.h"
 #include "capsapi/Comtype.h"
@@ -670,12 +671,13 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 	if ((version.major > 1) || ((version.major == 1) && (version.minor >= 9))) {
 		messageOutput(false, "Features Set: ");
 
-		if (version.deviceFlags1 & FLAGS_HIGH_PRECISION_SUPPORT) messageOutput(false, "      o Higher Accuracy SCP Mode");
 		if (version.fullControlMod || (version.deviceFlags1 & FLAGS_DISKCHANGE_SUPPORT)) messageOutput(false, "      o Disk Change Pin Support");
 		if (version.deviceFlags1 & FLAGS_DRAWBRIDGE_PLUSMODE) messageOutput(false, "      o DrawBridge PLUS"); else messageOutput(false, "      o DrawBridge Classic");
 		if (version.deviceFlags1 & FLAGS_DENSITYDETECT_ENABLED) messageOutput(false, "      o HD/DD Detect Enabled");
 		if (version.deviceFlags1 & FLAGS_SLOWSEEKING_MODE) messageOutput(false, "      o Slow Seeking Mode Enabled");
 		if (version.deviceFlags1 & FLAGS_INDEX_ALIGN_MODE) messageOutput(false, "      o Force Index Alignment on Writes Enabled");
+		if (version.deviceFlags1 & FLAGS_FLUX_READ) messageOutput(false, "      o Accurate Flux Read Mode"); else
+		if (version.deviceFlags1 & FLAGS_HIGH_PRECISION_SUPPORT) messageOutput(false, "      o Higher Accuracy SCP Mode");
 		if (version.deviceFlags1 & FLAGS_FIRMWARE_BETA) messageOutput(false, "      o Beta Firmware");
 	}
 
@@ -1498,7 +1500,7 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring& inputFile, bool mediaIsHD, bo
 				m_device.eraseCurrentTrack();
 			} else
 				if (writeFromIndex) 
-					if (supportsFluxErase) m_device.eraseFluxOnTrack(); m_device.eraseCurrentTrack();
+					m_device.eraseCurrentTrack();
 
 			if (callback)
 				if (callback(currentTrack, surface, false, failCount > 0 ? CallbackOperation::coRetryWriting : CallbackOperation::coWriting) == WriteResponse::wrAbort) {
@@ -1650,7 +1652,7 @@ struct SCPTrackInMemory {
 // Reads the disk and write the data to the SCP file supplied.  The callback is for progress, and you can returns FALSE to abort the process
 // numTracks is the number of tracks to read.  Usually 80 (0..79), sometimes track 80 and 81 are needed. revolutions is hwo many revolutions of the disk to save (1-5)
 // SCP files are a low level flux record of the disk and usually can backup copy protected disks to.  Without special hardware they can't usually be written back to disks.
-ADFResult ADFWriter::DiskToSCP(const std::wstring& outputFile, bool isHDMode, const unsigned int numTracks, const unsigned char revolutions, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound, const int maxSectors, const CallbackOperation operation)> callback) {
+ADFResult ADFWriter::DiskToSCP(const std::wstring& outputFile, bool isHDMode, const unsigned int numTracks, const unsigned char revolutions, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound, const int maxSectors, const CallbackOperation operation)> callback, bool useNewFluxReader) {
 	if (!m_device.isOpen()) return ADFResult::adfrDriveError;
 
 	if (callback)
@@ -1741,6 +1743,9 @@ ADFResult ADFWriter::DiskToSCP(const std::wstring& outputFile, bool isHDMode, co
 			track.revolutionData.clear();
 			track.header.trackNumber = (currentTrack * 2) + surfaceIndex;
 
+			PLL::BridgePLL pll(false, false);
+			pll.setRotationExtractor(&extractor);
+
 			// Change the surface we're looking at
 			if (m_device.selectSurface(surface) != DiagnosticResponse::drOK) {
 				hADFFile.close();
@@ -1762,19 +1767,22 @@ ADFResult ADFWriter::DiskToSCP(const std::wstring& outputFile, bool isHDMode, co
 			currentRev.indexTime = 0;
 			currentRev.trackLength = 0;
 
+			pll.reset();
+			extractor.reset(isHDMode);
+
 			SCPTrackData currentRevData;
 
 			std::function<bool(RotationExtractor::MFMSample** mfmData, const unsigned int dataLengthInBits)> callbackFunction = 
 				[this, &track, &currentRev, &currentRevData, revolutions, isHDMode](RotationExtractor::MFMSample** _mfmData, unsigned int dataLengthInBits)->bool {
+					if (track.revolution.size() >= revolutions) return false;
+
 					RotationExtractor::MFMSample* mfmData = *_mfmData;
 					unsigned int currentTime = 0;
-					unsigned int numBits = 0;
-
+					
 					for (unsigned int a = 0; a < dataLengthInBits; a++) {
 						const unsigned int bit = 7 - (a & 7);
 
 						currentTime += isHDMode ? ((unsigned int)mfmData->bittime[bit] / 2) : ((unsigned int)mfmData->bittime[bit]);
-						numBits++;
 
 						// Bit found?
 						if (mfmData->mfmData & (1 << bit)) {
@@ -1796,7 +1804,6 @@ ADFResult ADFWriter::DiskToSCP(const std::wstring& outputFile, bool isHDMode, co
 							currentRev.trackLength++;
 
 							// Reset
-							numBits = 0;
 							currentTime = 0;
 						}
 							
@@ -1816,10 +1823,17 @@ ADFResult ADFWriter::DiskToSCP(const std::wstring& outputFile, bool isHDMode, co
 				};
 
 			for (unsigned int retries = 0; retries <= revolutions; retries ++) {
-				if (m_device.readRotation(extractor, RAW_TRACKDATA_LENGTH_HD, samples, startPatterns, callbackFunction) == DiagnosticResponse::drOK) 
-					break;
+				if (useNewFluxReader) {
+					if (m_device.readFlux(pll, RAW_TRACKDATA_LENGTH_HD, samples, startPatterns, callbackFunction) == DiagnosticResponse::drOK)
+						break;
+				}
+				else {
+					if (m_device.readRotation(*pll.rotationExtractor(), RAW_TRACKDATA_LENGTH_HD, samples, startPatterns, callbackFunction, false) == DiagnosticResponse::drOK)
+						break;
+				}
 			}
-			if (track.revolution.size() < revolutions) return ADFResult::adfrDriveError;
+			if (track.revolution.size() < revolutions) 
+				return ADFResult::adfrDriveError;
 
 			// Get the current position
 			uint32_t currentPosition = (uint32_t)hADFFile.tellp();
@@ -1904,7 +1918,7 @@ ADFResult ADFWriter::DiskToSCP(const std::wstring& outputFile, bool isHDMode, co
 ADFResult ADFWriter::SCPToDisk(const std::wstring& inputFile, bool extraErases, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError, const CallbackOperation operation) > callback) {
 	if (!m_device.isOpen()) return ADFResult::adfrDriveError;
 	ArduinoFloppyReader::FirmwareVersion version = m_device.getFirwareVersion();
-	if ((version.major == 1) && ((version.minor < 9) || ((version.minor == 9) && (version.buildNumber < 18)))) return ADFResult::adfrFirmwareTooOld;
+	if ((version.major == 1) && ((version.minor < 9) || ((version.minor == 9) && (version.buildNumber < 22)))) return ADFResult::adfrFirmwareTooOld;
 
 	m_device.checkForDisk(true);
 	if (!m_device.isDiskInDrive()) return ADFResult::adfrDriveError;
@@ -2036,22 +2050,22 @@ ADFResult ADFWriter::SCPToDisk(const std::wstring& inputFile, bool extraErases, 
 		}
 
 		// Now compute a master flux times structure from the data for all three.  They *should* all be the same length
-		int revolutionToWrite = header.numRevolutions ? 1 : 0;
+		int revolutionToWrite = (header.numRevolutions>1) ? 1 : 0;
 		std::vector<DWORD> masterTimes;
 		for (DWORD i = 0; i < trk.revolution[revolutionToWrite].trackLength; i++) {
 			masterTimes.push_back(actualFluxTimes[i+ trk.revolution[revolutionToWrite].dataOffset]);
 		}
 
 		if (extraErases) {
-			m_device.eraseCurrentTrack();
+			m_device.eraseFluxOnTrack();
 			m_device.eraseFluxOnTrack();
 		}
-		m_device.eraseFluxOnTrack();
-		DiagnosticResponse r = m_device.writeFlux(masterTimes,0, driveRPM, true);
+		m_device.eraseCurrentTrack();
+		DiagnosticResponse r = m_device.writeFlux(masterTimes,0, driveRPM, false, true);
 		if ((r == DiagnosticResponse::drFramingError) || (r == DiagnosticResponse::drSerialOverrun)) {
 			// Retry
-			m_device.eraseFluxOnTrack();
-			r = m_device.writeFlux(masterTimes,0, driveRPM, true);
+			m_device.eraseCurrentTrack();
+			r = m_device.writeFlux(masterTimes,0, driveRPM, true, true);
 		}
 		if (r == DiagnosticResponse::drMediaTypeMismatch) return ADFResult::adfrMediaSizeMismatch;
 		if (r != DiagnosticResponse::drOK) return ADFResult::adfrDriveError;	
@@ -2239,7 +2253,7 @@ struct IPFData {
 ADFResult ADFWriter::IPFToDisk(const std::wstring& inputFile, bool extraErases, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError, const CallbackOperation operation) > callback) {
 	if (!m_device.isOpen()) return ADFResult::adfrDriveError;
 	ArduinoFloppyReader::FirmwareVersion version = m_device.getFirwareVersion();
-	if ((version.major == 1) && ((version.minor < 9) || ((version.minor == 9) && (version.buildNumber < 18)))) return ADFResult::adfrFirmwareTooOld;
+	if ((version.major == 1) && ((version.minor < 9) || ((version.minor == 9) && (version.buildNumber < 22)))) return ADFResult::adfrFirmwareTooOld;
 
 	m_device.checkForDisk(true);
 	if (!m_device.isDiskInDrive()) return ADFResult::adfrDriveError;
@@ -2348,7 +2362,7 @@ ADFResult ADFWriter::IPFToDisk(const std::wstring& inputFile, bool extraErases, 
 				}
 				data.push_back({ density, (trackInfo.trackbuf[bytePos] & (1 << (7-(outPos & 7)))) ? BitType::btOn : BitType::btOff });
 			}
-
+			 
 			// Handle 'weak bits'
 			std::vector<WeakData> weakList;
 			for (size_t weak = 0; weak < trackInfo.weakcnt; weak++) {
@@ -2422,22 +2436,35 @@ ADFResult ADFWriter::IPFToDisk(const std::wstring& inputFile, bool extraErases, 
 					else {
 						// Create fuzzy bits where bits are on the boundary of where they should be
 						fluxSoFarOut = 0;
-						while (fluxSoFar > 39000) {
+						while (fluxSoFar > 183000) {
 							// Get the PLL in sync
-							flux.push_back(8000);    // 0001
 							flux.push_back(8000);    // 0001
 							flux.push_back(6000);    // 001
 							flux.push_back(4000);    // 01
 							// Then screw with it
-							flux.push_back(5000);    // 01 or 001?
+							for (int counter = 1; counter <= 7; counter++) {
+								flux.push_back(6000 - (counter*125)); 
+								flux.push_back(4000 + (counter*125));    // 01
+							}
+							flux.push_back(5000);    // ?!
+							for (int counter = 7; counter >=1; counter--) {
+								flux.push_back(4000 + (counter * 125));    // 01
+								flux.push_back(6000 - (counter * 125));
+							}
 							// And go back to normal
-							flux.push_back(4000);    // likewise, this may also confuse it
-							flux.push_back(4000);    // 01 back to normal
-							fluxSoFar -= 39000;
-							fluxSoFarOut += 39000;
+							for (int counter=1; counter<=5; counter++)
+								flux.push_back(4000); 
+
+							fluxSoFar -= 183000;
+							fluxSoFarOut += 183000;
 						}
 
 						// See how much flux time is left
+						while (fluxSoFar > 32000) {
+							flux.push_back(32000);
+							fluxSoFar -= 32000;
+							fluxSoFarOut += 32000;
+						}
 						if (fluxSoFar >= 3750) {
 							flux.push_back(fluxSoFar);
 							fluxSoFarOut += fluxSoFar;
@@ -2486,15 +2513,16 @@ ADFResult ADFWriter::IPFToDisk(const std::wstring& inputFile, bool extraErases, 
 
 			// Now write the track
 			if (extraErases) {
-				m_device.eraseCurrentTrack();
+				m_device.eraseFluxOnTrack();
 				m_device.eraseFluxOnTrack();
 			}
-			m_device.eraseFluxOnTrack();
-			DiagnosticResponse r = m_device.writeFlux(flux, fluxTimeAtOverlap, driveRPM, false, terminateAtIndex);
+			// Reset to 01010101 etc
+			m_device.eraseCurrentTrack();
+			DiagnosticResponse r = m_device.writeFlux(flux, (DWORD)fluxTimeAtOverlap, driveRPM, false, terminateAtIndex);
 			if ((r == DiagnosticResponse::drFramingError) || (r == DiagnosticResponse::drSerialOverrun)) {
 				// Retry
 				m_device.eraseFluxOnTrack();
-				r = m_device.writeFlux(flux, fluxTimeAtOverlap, driveRPM, false);
+				r = m_device.writeFlux(flux, (DWORD)fluxTimeAtOverlap, driveRPM, false, terminateAtIndex);
 			}			
 			if (r != DiagnosticResponse::drOK) return ADFResult::adfrDriveError;
 						

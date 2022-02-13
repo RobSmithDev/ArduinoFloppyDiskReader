@@ -2,7 +2,7 @@
 #define DISKREADERWRITER_SERIAL_IO
 /* ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017-2021 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2022 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This library is free software; you can redistribute it and/or
@@ -118,7 +118,7 @@ public:
 	// Returns the number of bytes waiting to be read
 	unsigned int getBytesWaiting();
 
-	// Check if we wrre quick enough reading the data
+	// Check if we were quick enough reading the data
 	bool checkForOverrun();
 
 	// Open a port by name
@@ -139,6 +139,9 @@ public:
 	// Attempts to read some data from the port.  Returns how much it actually read.
 	// Returns how mcuh it actually read
 	unsigned int read(void* data, unsigned int dataLength);
+
+	// A very simple, uncluttered version of the above, mainly for linux
+	unsigned int justRead(void* data, unsigned int dataLength);
 
 	// Sets the read timeouts. The actual timeout is calculated as waitTimetimeout + (multiplier * num bytes)
 	void setReadTimeouts(unsigned int waitTimetimeout, unsigned int multiplier);

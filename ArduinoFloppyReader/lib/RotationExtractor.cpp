@@ -1,6 +1,6 @@
 /* ArduinoFloppyReader (and writer) - Rotation Extractor
 *
-* Copyright (C) 2017-2021 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2022 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This library is free software; you can redistribute it and/or
@@ -44,12 +44,14 @@ RotationExtractor::~RotationExtractor() {
 
 
 // Finds the overlap between the start of the data and where we currently are.  The returned position is where the NEXT revolution starts
-unsigned int RotationExtractor::getOverlapPosition() const {
-	int bestScore = OVERLAP_SEQUENCE_MATCHES / 4;     // must have *some* kind of match to be worthy
-	unsigned int bestScoreIndex = m_revolutionReadyAt;
+uint32_t RotationExtractor::getOverlapPosition(uint32_t& numberOfBadMatches) const {
+	numberOfBadMatches = 0;
+
+	int bestScore = OVERLAP_SEQUENCE_MATCHES / 2;     // must have *some* kind of match to be worthy
+	uint32_t bestScoreIndex = m_revolutionReadyAt;
 
 	// Working back from the mid-point
-	for (unsigned int midPoint = 0; midPoint < OVERLAP_SEQUENCE_MATCHES * (OVERLAP_EXTRA_BUFFER - 1); midPoint++) {
+	for (uint32_t midPoint = 0; midPoint < OVERLAP_SEQUENCE_MATCHES * (OVERLAP_EXTRA_BUFFER - 1); midPoint++) {
 
 		// Count the number of matching sequences
 		int scoreL = 0;
@@ -57,15 +59,26 @@ unsigned int RotationExtractor::getOverlapPosition() const {
 		const int startPositionR = m_revolutionReadyAt + midPoint;
 		const int startPositionL = m_revolutionReadyAt - midPoint;
 
-		if (startPositionL >= 0) {
-			for (unsigned int pos = 0; pos < OVERLAP_SEQUENCE_MATCHES; pos++) {
-				if (m_sequences[pos].mfm == m_sequences[startPositionR + pos].mfm) scoreR++;
-				if (m_sequences[pos].mfm == m_sequences[startPositionL + pos].mfm) scoreL++;
+		if (startPositionL + OVERLAP_SEQUENCE_MATCHES >= (int32_t)m_sequencePos) continue;
+		if (startPositionR + OVERLAP_SEQUENCE_MATCHES >= (int32_t)m_sequencePos) {
+			if (startPositionL >= 0) {
+				for (uint32_t pos = 0; pos < OVERLAP_SEQUENCE_MATCHES; pos++) {
+					if (m_indexSequence.sequences[pos] == m_sequences[startPositionL + pos].mfm) scoreL++;
+				}
 			}
+			else continue;
 		}
 		else {
-			for (unsigned int pos = 0; pos < OVERLAP_SEQUENCE_MATCHES; pos++) {
-				if (m_sequences[pos].mfm == m_sequences[startPositionR + pos].mfm) scoreR++;
+			if (startPositionL >= 0) {
+				for (uint32_t pos = 0; pos < OVERLAP_SEQUENCE_MATCHES; pos++) {
+					if (m_sequences[pos].mfm == m_sequences[startPositionR + pos].mfm) scoreR++;
+					if (m_sequences[pos].mfm == m_sequences[startPositionL + pos].mfm) scoreL++;
+				}
+			}
+			else {
+			for (uint32_t pos = 0; pos < OVERLAP_SEQUENCE_MATCHES; pos++) {
+					if (m_sequences[pos].mfm == m_sequences[startPositionR + pos].mfm) scoreR++;
+				}
 			}
 		}
 
@@ -86,29 +99,33 @@ unsigned int RotationExtractor::getOverlapPosition() const {
 	// 1. The drive speed is broken!
 	// 2. The overlap is unformatted, in which case it doesn't really matter anyway
 	// 3. The disk/head is damaged or dirty, so then there's no hope anyway
+
+	numberOfBadMatches = OVERLAP_SEQUENCE_MATCHES - bestScore;
+
 	return bestScoreIndex;
 }
 
 // Finds the true start position of the INDEX pulse based on previous revolutions.  This is a lot like the above function
-const unsigned int RotationExtractor::getTrueIndexPosition(const unsigned int nextRevolutionStart, const unsigned int startingPoint) {
+uint32_t RotationExtractor::getTrueIndexPosition(const uint32_t nextRevolutionStart, const uint32_t startingPoint)
+{
 	// Where to start from
-	const int firstPoint = (startingPoint == INDEX_NOT_FOUND) ? m_sequenceIndex : startingPoint;
+	const uint32_t firstPoint = startingPoint == INDEX_NOT_FOUND ? m_sequenceIndex : startingPoint;
 
 	// First. Do we actually have a 'index marker' buffer?
 	if (!m_indexSequence.valid) {
 		// Not valid means we make it, and take our index as "true"
 		m_indexSequence.valid = true;
-		for (unsigned int pos = 0; pos < OVERLAP_SEQUENCE_MATCHES; pos++)
+		for (uint32_t pos = 0; pos < OVERLAP_SEQUENCE_MATCHES_INDEXMODE; pos++)
 			m_indexSequence.sequences[pos] = m_sequences[(firstPoint + pos) % nextRevolutionStart].mfm;
 
 		return firstPoint;
 	}
 
-	int bestScore = OVERLAP_SEQUENCE_MATCHES / 4;     // must have *some* kind of match to be worthy
-	unsigned int bestScoreIndex = firstPoint;
+	int bestScore = OVERLAP_SEQUENCE_MATCHES_INDEXMODE / 4;     // must have *some* kind of match to be worthy
+	uint32_t bestScoreIndex = firstPoint;
 
 	// Working back from the mid-point
-	for (unsigned int midPoint = 0; midPoint < OVERLAP_SEQUENCE_MATCHES * (OVERLAP_EXTRA_BUFFER - 1); midPoint++) {
+	for (uint32_t midPoint = 0; midPoint < OVERLAP_SEQUENCE_MATCHES_INDEXMODE * (OVERLAP_EXTRA_BUFFER - 1); midPoint++) {
 
 		// Count the number of matching sequences
 		int scoreL = 0;
@@ -116,15 +133,27 @@ const unsigned int RotationExtractor::getTrueIndexPosition(const unsigned int ne
 		const int startPositionR = firstPoint + midPoint;
 		const int startPositionL = firstPoint - midPoint;
 
-		if (startPositionL >= 0) {
-			for (unsigned int pos = 0; pos < OVERLAP_SEQUENCE_MATCHES; pos++) {
-				if (m_indexSequence.sequences[pos] == m_sequences[(startPositionR + pos) % nextRevolutionStart].mfm) scoreR++;
-				if (m_indexSequence.sequences[pos] == m_sequences[(startPositionL + pos) % nextRevolutionStart].mfm) scoreL++;
+		// If this happens then nothing is going to work
+		if (startPositionL + OVERLAP_SEQUENCE_MATCHES_INDEXMODE >= (int32_t)m_sequencePos) continue;
+		if (startPositionR + OVERLAP_SEQUENCE_MATCHES_INDEXMODE >= (int32_t)m_sequencePos) {
+			if (startPositionL >= 0) {
+				for (uint32_t pos = 0; pos < OVERLAP_SEQUENCE_MATCHES_INDEXMODE; pos++) {
+					if (m_indexSequence.sequences[pos] == m_sequences[startPositionL + pos].mfm) scoreL++;
+				}
 			}
+			else continue;
 		}
 		else {
-			for (unsigned int pos = 0; pos < OVERLAP_SEQUENCE_MATCHES; pos++) {
-				if (m_indexSequence.sequences[pos] == m_sequences[(startPositionR + pos) % nextRevolutionStart].mfm) scoreR++;
+			if (startPositionL >= 0) {
+				for (uint32_t pos = 0; pos < OVERLAP_SEQUENCE_MATCHES_INDEXMODE; pos++) {
+					if (m_indexSequence.sequences[pos] == m_sequences[startPositionR + pos].mfm) scoreR++;
+					if (m_indexSequence.sequences[pos] == m_sequences[startPositionL + pos].mfm) scoreL++;
+				}
+			}
+			else {
+				for (uint32_t pos = 0; pos < OVERLAP_SEQUENCE_MATCHES_INDEXMODE; pos++) {
+					if (m_indexSequence.sequences[pos] == m_sequences[startPositionR + pos].mfm) scoreR++;
+				}
 			}
 		}
 
@@ -138,7 +167,7 @@ const unsigned int RotationExtractor::getTrueIndexPosition(const unsigned int ne
 			bestScoreIndex = startPositionR;
 		}
 
-		if (bestScore == OVERLAP_SEQUENCE_MATCHES) return bestScoreIndex;
+		if (bestScore == OVERLAP_SEQUENCE_MATCHES_INDEXMODE) return bestScoreIndex;
 	}
 
 	// If we got here then there wasn't a perfect match.  This would only happen if:
@@ -149,7 +178,7 @@ const unsigned int RotationExtractor::getTrueIndexPosition(const unsigned int ne
 }
 
 // Write a bit into the stream
-inline void writeStreamBit(RotationExtractor::MFMSample* output, unsigned int& pos, unsigned int& bit, bool value, const unsigned short valuespeed, const unsigned int maxLength) {
+inline void writeStreamBit(RotationExtractor::MFMSample* output, uint32_t& pos, uint32_t& bit, bool value, const unsigned short valuespeed, const uint32_t maxLength) {
 	if (pos >= maxLength) return;
 
 	output[pos].mfmData <<= 1;
@@ -186,7 +215,8 @@ void RotationExtractor::submitSequence(const MFMSequenceInfo& sequence, const bo
 	}
 
 	// And stop if we have too much.  Shouldn't happen
-	if (m_sequencePos >= MAX_REVOLUTION_SEQUENCES) return;
+	if (m_sequencePos >= MAX_REVOLUTION_SEQUENCES) 
+		return;
 
 	// See if we can calculate the time it takes to get a single revolution from the disk
 	if ((m_revolutionTime == 0) && (!m_useIndex) && (!m_useSimpleMode)) {
@@ -205,7 +235,7 @@ void RotationExtractor::submitSequence(const MFMSequenceInfo& sequence, const bo
 				m_revolutionTime = m_revolutionTimeCounting;
 
 				// Set the nearly complete marker to be at 90%.  That would only need approx another 20ms to complete
-				m_revolutionTimeNearlyComplete = (unsigned int)(m_revolutionTime * 0.9f);
+				m_revolutionTimeNearlyComplete = (uint32_t)(m_revolutionTime * 0.9f);
 			}
 		}
 		return;
@@ -258,7 +288,7 @@ void RotationExtractor::submitSequence(const MFMSequenceInfo& sequence, const bo
 	}
 	else {
 		m_sequences[m_sequencePos++] = sequence;
-		m_currentTime += (unsigned int)sequence.timeNS;
+		m_currentTime += (uint32_t)sequence.timeNS;
 
 		// This is a sneaky check-ahead for a full rotation, like a virtual index marker
 		if (m_currentTime >= m_revolutionTime) {
@@ -270,7 +300,7 @@ void RotationExtractor::submitSequence(const MFMSequenceInfo& sequence, const bo
 }
 
 // Extracts a single rotation and updates the buffer to remove it.  Returns FALSE if no rotation is available
-bool RotationExtractor::extractRotation(MFMSample* output, unsigned int& outputBits, const unsigned int maxBufferSizeBytes) {
+bool RotationExtractor::extractRotation(MFMSample* output, uint32_t& outputBits, const uint32_t maxBufferSizeBytes, const bool usePLLTime) {
 	// Step 0: check if we're possibly ready
 	if (!canExtract()) return false;
 
@@ -278,47 +308,54 @@ bool RotationExtractor::extractRotation(MFMSample* output, unsigned int& outputB
 		if (m_sequenceIndex == INDEX_NOT_FOUND) return false;
 		if (m_nextSequenceIndex == INDEX_NOT_FOUND) return false;
 		if (m_sequenceIndex > m_nextSequenceIndex) {
-			unsigned int s = m_sequenceIndex;
+			uint32_t s = m_sequenceIndex;
 			m_sequenceIndex = m_nextSequenceIndex;
 			m_nextSequenceIndex = s;
 		}
 
 		// Step 1: Find where the first index position is
-		const unsigned int revolutionStart = m_useSimpleMode ? m_sequenceIndex : getTrueIndexPosition(INDEX_NOT_FOUND, m_sequenceIndex);
+		uint32_t revolutionStart = m_useSimpleMode ? m_sequenceIndex : getTrueIndexPosition(INDEX_NOT_FOUND, m_sequenceIndex);
 
 		// Step 2: find out where the next one is
-		const unsigned int nextRevolutionStart = m_useSimpleMode ? m_nextSequenceIndex : getTrueIndexPosition(INDEX_NOT_FOUND, m_nextSequenceIndex);
+		uint32_t nextRevolutionStart = m_useSimpleMode ? m_nextSequenceIndex : getTrueIndexPosition(INDEX_NOT_FOUND, m_nextSequenceIndex);
+
+		// This *should* never happen.
+		if (nextRevolutionStart < revolutionStart) {
+			uint32_t tmp = revolutionStart;
+			revolutionStart = nextRevolutionStart;
+			nextRevolutionStart = tmp;
+		}
 
 		// Markers
-		unsigned int outputStreamPos = 0;
-		unsigned int outputStreamBit = 0;
-		unsigned int totalSamples = nextRevolutionStart - revolutionStart;
+		uint32_t outputStreamPos = 0;
+		uint32_t outputStreamBit = 0;
+		uint32_t totalSamples = nextRevolutionStart - revolutionStart;
 		// Work out revolution time anyway
-		unsigned int rTime = 0;
+		uint32_t rTime = 0;
 
 		// Step 3: output.  Data goes from 0 to nextRevolutionStart-1, but we need to output from indexPosition
-		for (unsigned int pos = 0; pos < totalSamples; pos++) {
-			const MFMSequenceInfo& sequence = m_sequences[pos + revolutionStart];
+		for (uint32_t pos = 0; pos < totalSamples; pos++) {
+			const MFMSequenceInfo& sequence = m_sequences[(pos + revolutionStart) % m_sequencePos];
 			rTime += sequence.timeNS;
 			
 #ifdef OUTPUT_TIME_IN_NS
-			const unsigned int bitTime = sequence.timeNS / ((unsigned int)sequence.mfm + 2);
+			const uint32_t bitTime = (usePLLTime ? sequence.pllTimeNS : sequence.timeNS) / ((uint32_t)sequence.mfm + 2);
 
 			// And write the output stream
-			for (unsigned int s = 0; s <= (unsigned int)sequence.mfm; s++)
+			for (uint32_t s = 0; s <= (uint32_t)sequence.mfm; s++)
 				writeStreamBit(output, outputStreamPos, outputStreamBit, false, bitTime, maxBufferSizeBytes);
 			writeStreamBit(output, outputStreamPos, outputStreamBit, (sequence.mfm != MFMSequence::mfm0000), bitTime, maxBufferSizeBytes);
 #else
-			const unsigned int speed = ((unsigned int)sequence.timeNS * 100) / (((unsigned int)sequence.mfm + 2) * 2000);
+			const uint32_t speed = ((uint32_t)(usePLLTime ? sequence.pllTimeNS : sequence.timeNS) * 100) / (((uint32_t)sequence.mfm + 2) * 2000);
 
 			// And write the output stream
-			for (unsigned int s = 0; s <= (unsigned int)sequence.mfm; s++)
+			for (uint32_t s = 0; s <= (uint32_t)sequence.mfm; s++)
 				writeStreamBit(output, outputStreamPos, outputStreamBit, false, speed, maxBufferSizeBytes);
 			writeStreamBit(output, outputStreamPos, outputStreamBit, (sequence.mfm != MFMSequence::mfm0000), speed, maxBufferSizeBytes);
 #endif
 		}
 		// Need to shift the last ones onto place
-		if (outputStreamBit) {
+		if (outputStreamBit && (outputStreamPos < maxBufferSizeBytes)) {
 			output[outputStreamPos].mfmData <<= (8 - outputStreamBit);
 #ifndef OUTPUT_TIME_IN_NS
 #ifndef HIGH_RESOLUTION_MODE
@@ -328,7 +365,7 @@ bool RotationExtractor::extractRotation(MFMSample* output, unsigned int& outputB
 		}
 		if (m_revolutionTime == 0) {
 			m_revolutionTime = rTime;
-			m_revolutionTimeNearlyComplete = (unsigned int)(m_revolutionTime * 0.9f);
+			m_revolutionTimeNearlyComplete = (uint32_t)(m_revolutionTime * 0.9f);
 		}
 		m_timeReceived -= rTime;
 
@@ -336,53 +373,68 @@ bool RotationExtractor::extractRotation(MFMSample* output, unsigned int& outputB
 		outputBits = (outputStreamPos * 8) + outputStreamBit;
 
 		// Now shift the remaining data so that the next revolution starts at 0
-		for (unsigned int pos = 0; pos < m_sequencePos - nextRevolutionStart; pos++)
-			m_sequences[pos] = m_sequences[pos + nextRevolutionStart];
+		for (uint32_t pos = 0; pos < m_sequencePos - nextRevolutionStart; pos++)
+			m_sequences[pos] = m_sequences[(pos + nextRevolutionStart) % m_sequencePos];
 
 		// And mark it
 		if (m_nextSequenceIndex > nextRevolutionStart) m_sequenceIndex = m_nextSequenceIndex - nextRevolutionStart; else m_sequenceIndex = 0;
 		m_nextSequenceIndex = INDEX_NOT_FOUND;
 
 		// And account for the shift
-		m_sequencePos -= nextRevolutionStart;		
+		if (nextRevolutionStart > m_sequencePos) // this IF shouldn't be needed
+			m_sequencePos = 0;
+		else  m_sequencePos -= nextRevolutionStart;
 	}
 	else {
 
 		// Step 1: Find the overlap between the start of the data and the end of the data
-		const unsigned int nextRevolutionStart = getOverlapPosition();
+		uint32_t numBadValues = 0;
+
+		uint32_t nextRevolutionStart = getOverlapPosition(numBadValues);
 		if (nextRevolutionStart < 1) return false;
 
+		// If the overlap is poor, switch to overlap detection using the indexes - if this is in the GAP its ok, but there's no way to tell
+		if (numBadValues >= MAX_BAD_VALUES_BEFORE_SWITCH) {
+			m_useIndex = true;
+			if (m_nextSequenceIndex == INDEX_NOT_FOUND) m_revolutionReady = false;
+			m_initialSequencesLength = 0;
+			return false;
+		}
+
 		// Step 2: wind it back to the INDEX position
-		const unsigned int indexPosition = getTrueIndexPosition(nextRevolutionStart);
+		uint32_t indexPosition = getTrueIndexPosition(nextRevolutionStart);
+
+		// This shouldn't be needed
+		if (nextRevolutionStart > m_sequencePos) nextRevolutionStart = m_sequencePos;
 
 		// Markers
-		unsigned int outputStreamPos = 0;
-		unsigned int outputStreamBit = 0;
+		uint32_t outputStreamPos = 0;
+		uint32_t outputStreamBit = 0;
 
 		// Step 3: output.  Data goes from 0 to nextRevolutionStart-1, but we need to output from indexPosition
-		for (unsigned int pos = 0; pos < nextRevolutionStart; pos++) {
+		for (uint32_t pos = 0; pos < nextRevolutionStart; pos++) {
 			const MFMSequenceInfo& sequence = m_sequences[(pos + indexPosition) % nextRevolutionStart];
-			m_currentTime -= (unsigned int)sequence.timeNS;
-			m_timeReceived -= (unsigned int)sequence.timeNS;
+			m_currentTime -= (uint32_t)sequence.timeNS;
+			m_timeReceived -= (uint32_t)sequence.timeNS;
 
 #ifdef OUTPUT_TIME_IN_NS
-			const unsigned int bitTime = sequence.timeNS / ((unsigned int)sequence.mfm + 2);
+			const uint32_t bitTime = (usePLLTime ? sequence.pllTimeNS : sequence.timeNS) / ((uint32_t)sequence.mfm + 2);
 
 			// And write the output stream
-			for (unsigned int s = 0; s <= (unsigned int)sequence.mfm; s++)
+			for (uint32_t s = 0; s <= (uint32_t)sequence.mfm; s++)
 				writeStreamBit(output, outputStreamPos, outputStreamBit, false, bitTime, maxBufferSizeBytes);
 			writeStreamBit(output, outputStreamPos, outputStreamBit, (sequence.mfm != MFMSequence::mfm0000), bitTime, maxBufferSizeBytes);
 #else
-			const unsigned int speed = ((unsigned int)sequence.timeNS * 100) / (((unsigned int)sequence.mfm + 2) * 2000);
+			const uint32_t speed = ((uint32_t)(usePLLTime ? sequence.pllTimeNS : sequence.timeNS) * 100) / (((uint32_t)sequence.mfm + 2) * 2000);
 
 			// And write the output stream
-			for (unsigned int s = 0; s <= (unsigned int)sequence.mfm; s++)
+			for (uint32_t s = 0; s <= (uint32_t)sequence.mfm; s++)
 				writeStreamBit(output, outputStreamPos, outputStreamBit, false, speed, maxBufferSizeBytes);
 			writeStreamBit(output, outputStreamPos, outputStreamBit, (sequence.mfm != MFMSequence::mfm0000), speed, maxBufferSizeBytes);
 #endif
 		}
 		// Need to shift the last ones onto place
-		if (outputStreamBit) {
+		if (outputStreamBit && (outputStreamPos < maxBufferSizeBytes)) {
 			output[outputStreamPos].mfmData <<= (8 - outputStreamBit);
 #ifndef OUTPUT_TIME_IN_NS
 #ifndef HIGH_RESOLUTION_MODE
@@ -399,7 +451,7 @@ bool RotationExtractor::extractRotation(MFMSample* output, unsigned int& outputB
 		m_nextSequenceIndex = INDEX_NOT_FOUND;
 
 		// Now shift the remaining data
-		for (unsigned int pos = 0; pos < m_sequencePos - nextRevolutionStart; pos++)
+		for (uint32_t pos = 0; pos < m_sequencePos - nextRevolutionStart; pos++)
 			m_sequences[pos] = m_sequences[pos + nextRevolutionStart];
 
 		// And account for the shift

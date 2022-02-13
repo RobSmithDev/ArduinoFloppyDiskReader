@@ -1,6 +1,6 @@
 /* ArduinoFloppyReaderWin
 *
-* Copyright (C) 2017-2021 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2022 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This program is free software; you can redistribute it and/or
@@ -70,5 +70,7 @@ public:
 	const ImageType getImageType() const { return static_cast<ImageType>(m_fileformat.GetCurSel()); }
 	const bool is80TrackMode() const { return m_tracks80.GetCheck() != 0; };
 	const bool is82TrackMode() const { return m_tracks82.GetCheck() != 0; };
+	const bool isExperimentalMode() const { return m_experimental.GetCheck() != 0; };
 	CStatic m_scp2;
+	CButton m_experimental;
 };

@@ -1,6 +1,6 @@
 /* ArduinoFloppyReaderWin
 *
-* Copyright (C) 2017-2021 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2022 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This program is free software; you can redistribute it and/or
@@ -49,6 +49,7 @@ void CReadFromDiskPage::DoDataExchange(CDataExchange* pDX)
 	DDX_Control(pDX, IDC_SCPDD, m_scpdd);
 	DDX_Control(pDX, IDC_SCPHD, m_scphd);
 	DDX_Control(pDX, IDC_SCPHD2, m_scp2);
+	DDX_Control(pDX, IDC_EXPERIMENTAL, m_experimental);
 }
 
 
@@ -80,6 +81,12 @@ BOOL CReadFromDiskPage::OnInitDialog() {
 	m_tracks82.SetCheck(numTracks == 82);
 	m_tracks80.SetCheck(numTracks != 82);
 
+	buf[0] = '\0';
+	len = 10;
+	RegQueryValueW(HKEY_CURRENT_USER, L"Software\\ArduinoFloppyReader\\highflux", buf, &len);
+	index = wcstol(buf, nullptr, 10);
+	m_experimental.SetCheck(index != 0);
+
 	OnCbnSelchangeDiskformat();
 
 	return TRUE;
@@ -93,6 +100,9 @@ void CReadFromDiskPage::saveSettings() {
 
 	_itoa_s(m_tracks82.GetCheck() ? 82 : 80, buffer, 10);
 	RegSetValueA(HKEY_CURRENT_USER, "Software\\ArduinoFloppyReader\\tracks", REG_SZ, buffer, strlen(buffer));
+
+	_itoa_s(m_experimental.GetCheck() ? 1 : 0, buffer, 10);
+	RegSetValueA(HKEY_CURRENT_USER, "Software\\ArduinoFloppyReader\\highflux", REG_SZ, buffer, strlen(buffer));
 }
 
 // CReadFromDiskPage message handlers
@@ -155,10 +165,12 @@ void CReadFromDiskPage::OnCbnSelchangeDiskformat()
 		m_scpdd.ShowWindow(SW_SHOW);
 		m_scphd.ShowWindow(SW_SHOW);
 		m_scp2.ShowWindow(SW_SHOW);
+		m_experimental.ShowWindow(SW_SHOW);
 	}
 	else {
 		m_scpdd.ShowWindow(SW_HIDE);
 		m_scphd.ShowWindow(SW_HIDE);
+		m_experimental.ShowWindow(SW_HIDE);
 		m_scp2.ShowWindow(SW_HIDE);
 	}
 }

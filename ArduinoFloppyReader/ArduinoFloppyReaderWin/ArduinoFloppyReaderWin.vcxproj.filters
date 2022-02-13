@@ -81,6 +81,9 @@
     <ClInclude Include="..\lib\capsapi\Comtype.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\lib\pll.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ArduinoFloppyReaderWin.cpp">
@@ -120,6 +123,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\lib\capsapi\CapsPlug.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\lib\pll.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

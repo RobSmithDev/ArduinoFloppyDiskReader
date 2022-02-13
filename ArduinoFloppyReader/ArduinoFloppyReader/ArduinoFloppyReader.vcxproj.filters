@@ -51,6 +51,12 @@
     <ClInclude Include="..\lib\capsapi\Comtype.h">
       <Filter>Header Files\IPF</Filter>
     </ClInclude>
+    <ClInclude Include="..\lib\pll.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="resource.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Main.cpp">
@@ -74,5 +80,18 @@
     <ClCompile Include="..\lib\capsapi\CapsPlug.cpp">
       <Filter>Source Files\IPF</Filter>
     </ClCompile>
+    <ClCompile Include="..\lib\pll.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="DrawBridge.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="res\ArduinoFloppyReaderWin.ico">
+      <Filter>Resource Files</Filter>
+    </Image>
   </ItemGroup>
 </Project>

@@ -1,12 +1,13 @@
 /* ArduinoFloppyReaderWriter aka DrawBridge
 *
-* Copyright (C) 2017-2021 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2022 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This library is free software; you can redistribute it and/or
 * modify it under the terms of the GNU Library General Public
 * License as published by the Free Software Foundation; either
 * version 3 of the License, or (at your option) any later version.
+*
 *
 * This library is distributed in the hope that it will be useful,
 * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -31,10 +32,11 @@
 #include "ArduinoInterface.h"
 #include <sstream>
 #include <vector>
-#include <queue>
 #include <thread>
+#include <chrono>
 #include "RotationExtractor.h"
 #include <mutex>
+#include <math.h>
 #ifndef _WIN32
 #include <string.h>
 #endif
@@ -70,10 +72,12 @@ using namespace ArduinoFloppyReader;
 #define COMMAND_TEST_RPM           'P'    // Requires Firmware V1.9
 #define COMMAND_CHECK_FEATURES     '@'    // Requires Firmware V1.9
 #define COMMAND_READTRACKSTREAM_HIGHPRECISION 'F' // Requires Firmware V1.9
+#define COMMAND_READTRACKSTREAM_FLUX          'L'   // Requires Firmware V1.9.22
+#define COMMAND_READTRACKSTREAM_HALFPLL       'l'   // Requires Firmware V1.9.22
 #define COMMAND_EEPROM_READ        'E'    // Read a value from the eeprom
 #define COMMAND_EEPROM_WRITE       'e'    // Write a value to the eeprom
 #define COMMAND_RESET              'R'    // Reset
-#define COMMAND_WRITEFLUX          'W'    // Requires Firmware V1.9.18
+#define COMMAND_WRITEFLUX          'Y'    // Requires Firmware V1.9.22
 #define COMMAND_ERASEFLUX          'w'    // Requires Firmware V1.9.18
 
 #define SPECIAL_ABORT_CHAR		   'x'
@@ -112,31 +116,31 @@ std::string lastCommandToName(LastCommand cmd) {
 const std::string ArduinoInterface::getLastErrorStr() const {
 	std::stringstream tmp;
 	switch (m_lastError) {
-	case DiagnosticResponse::drOldFirmware: return "The Arduino is running an older version of the firmware/sketch.  Please re-upload.";
+	case DiagnosticResponse::drOldFirmware: return "The Arduino/DrawBridge is running an older version of the firmware/sketch.  Please re-upload.";
 	case DiagnosticResponse::drOK: return "Last command completed successfully.";
 	case DiagnosticResponse::drPortInUse: return "The specified COM port is currently in use by another application.";
 	case DiagnosticResponse::drPortNotFound: return "The specified COM port was not found.";
 	case DiagnosticResponse::drAccessDenied: return "The operating system denied access to the specified COM port.";
 	case DiagnosticResponse::drComportConfigError: return "We were unable to configure the COM port using the SetCommConfig() command.";
 	case DiagnosticResponse::drBaudRateNotSupported: return "The COM port does not support the 2M baud rate required by this application.";
-	case DiagnosticResponse::drErrorReadingVersion: return "An error occured attempting to read the version of the sketch running on the Arduino.";
+	case DiagnosticResponse::drErrorReadingVersion: return "An error occurred attempting to read the version of the sketch running on the Arduino.";
 	case DiagnosticResponse::drErrorMalformedVersion: return "The Arduino returned an unexpected string when version was requested.  This could be a baud rate mismatch or incorrect loaded sketch.";
 	case DiagnosticResponse::drCTSFailure: return "Diagnostics reports the CTS line is not connected correctly or is not behaving correctly.";
-	case DiagnosticResponse::drTrackRangeError: return "An error occured attempting to go to a track number that was out of allowed range.";
+	case DiagnosticResponse::drTrackRangeError: return "An error occurred attempting to go to a track number that was out of allowed range.";
 	case DiagnosticResponse::drWriteProtected: return "Unable to write to the disk.  The disk is write protected.";
-	case DiagnosticResponse::drPortError: return "An unknown error occured attempting to open access to the specified COM port.";
+	case DiagnosticResponse::drPortError: return "An unknown error occurred attempting to open access to the specified COM port.";
 	case DiagnosticResponse::drDiagnosticNotAvailable: return "CTS diagnostic not available, command GetCommModemStatus failed to execute.";
 	case DiagnosticResponse::drSelectTrackError: return "Arduino reported an error seeking to a specific track.";
 	case DiagnosticResponse::drTrackWriteResponseError: return "Error receiving status from Arduino after a track write operation.";
 	case DiagnosticResponse::drSendDataFailed: return "Error sending track data to be written to disk.  This could be a COM timeout.";
 	case DiagnosticResponse::drRewindFailure: return "Arduino was unable to find track 0.  This could be a wiring fault or power supply failure.";
 	case DiagnosticResponse::drNoDiskInDrive: return "No disk in drive";
-	case DiagnosticResponse::drMediaTypeMismatch: if (m_lastCommand == LastCommand::lcWriteFlux) 
+	case DiagnosticResponse::drMediaTypeMismatch: if (m_lastCommand == LastCommand::lcWriteFlux)
 		return "Write Flux only supports DD disks and data"; else return "An attempt to read or write had an incorrect amount of data given the DD/HD media used";
 	case DiagnosticResponse::drWriteTimeout: return "The Arduino could not receive the data quick enough to write to disk. Try connecting via USB2 and not using a USB hub.\n\nIf this still does not work, turn off precomp if you are using it.";
 	case DiagnosticResponse::drFramingError: return "The Arduino received bad data from the PC. This could indicate poor connectivity, bad baud rate matching or damaged cables.";
 	case DiagnosticResponse::drSerialOverrun: return "The Arduino received data faster than it could handle. This could either be a fault with the CTS connection or the USB/serial interface is faulty";
-	case DiagnosticResponse::drUSBSerialBad: return "The USB->Serial converter being used isn't suitable and doesnt run consistantly fast enough.  Please ensure you use a genuine FTDI adapter.";
+	case DiagnosticResponse::drUSBSerialBad: return "The USB->Serial converter being used isn't suitable and doesn't run consistently fast enough.  Please ensure you use a genuine FTDI adapter.";
 	case DiagnosticResponse::drError:	tmp << "Arduino responded with an error running the " << lastCommandToName(m_lastCommand) << " command.";
 		return tmp.str();
 
@@ -196,14 +200,14 @@ DiagnosticResponse ArduinoInterface::checkIfDiskIsWriteProtected(bool forceCheck
 	}
 
 	// If no hardware support then return no change
-	if ((m_version.major == 1) && (m_version.minor < 8)) {
+	if (m_version.major == 1 && m_version.minor < 8) {
 		m_lastError = DiagnosticResponse::drOldFirmware;
 		return m_lastError;
 	}
 
 	// Send and update flag
 	m_lastError = checkForDisk(true);
-	if ((m_lastError == DiagnosticResponse::drStatusError) || (m_lastError == DiagnosticResponse::drOK)) {
+	if (m_lastError == DiagnosticResponse::drStatusError || m_lastError == DiagnosticResponse::drOK) {
 
 		if (m_isWriteProtected)  m_lastError = DiagnosticResponse::drWriteProtected;
 	}
@@ -222,14 +226,14 @@ DiagnosticResponse ArduinoInterface::checkForDisk(bool forceCheck) {
 
 
 	// If no hardware support then return no change
-	if ((m_version.major == 1) && (m_version.minor < 8)) {
+	if (m_version.major == 1 && m_version.minor < 8) {
 		m_lastError = DiagnosticResponse::drOldFirmware;
 		return m_lastError;
 	}
 
 	char response;
 	m_lastError = runCommand(COMMAND_CHECKDISKEXISTS, '\0', &response);
-	if ((m_lastError == DiagnosticResponse::drStatusError) || (m_lastError == DiagnosticResponse::drOK)) {
+	if (m_lastError == DiagnosticResponse::drStatusError || m_lastError == DiagnosticResponse::drOK) {
 		if (response == '#') {
 			m_lastError = DiagnosticResponse::drNoDiskInDrive;
 			m_diskInDrive = false;
@@ -247,7 +251,7 @@ DiagnosticResponse ArduinoInterface::checkForDisk(bool forceCheck) {
 			return m_lastError;
 		}
 
-		if ((response == '1') || (response == '#')) m_isWriteProtected = response == '1';
+		if (response == '1' || response == '#') m_isWriteProtected = response == '1';
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
 	return m_lastError;
@@ -257,20 +261,20 @@ DiagnosticResponse ArduinoInterface::checkForDisk(bool forceCheck) {
 DiagnosticResponse ArduinoInterface::testIndexPulse() {
 	m_lastCommand = LastCommand::lcRunDiagnostics;
 
-	// Port opned.  We need to check what happens as the pin is toggled
+	// Port opened.  We need to check what happens as the pin is toggled
 	m_lastError = runCommand(COMMAND_DIAGNOSTICS, '3');
 
 	return m_lastError;
 }
 
 // Guess if the drive is actually a PLUS Mode drive
-DiagnosticResponse ArduinoInterface::guessPlusMode(bool &isProbablyPlus) {
+DiagnosticResponse ArduinoInterface::guessPlusMode(bool& isProbablyPlus) {
 	m_lastCommand = LastCommand::lcRunDiagnostics;
 
-	// Port opned.  We need to check what happens as the pin is toggled
+	// Port opened.  We need to check what happens as the pin is toggled
 	char response = '0';
 	m_lastError = runCommand(COMMAND_DIAGNOSTICS, '6', &response);
-	isProbablyPlus = (response != '0');
+	isProbablyPlus = response != '0';
 
 	if (m_lastError == DiagnosticResponse::drError) m_lastError = DiagnosticResponse::drOK;
 
@@ -281,7 +285,7 @@ DiagnosticResponse ArduinoInterface::guessPlusMode(bool &isProbablyPlus) {
 DiagnosticResponse ArduinoInterface::testDataPulse() {
 	m_lastCommand = LastCommand::lcRunDiagnostics;
 
-	// Port opned.  We need to check what happens as the pin is toggled
+	// Port opened.  We need to check what happens as the pin is toggled
 	m_lastError = runCommand(COMMAND_DIAGNOSTICS, '4');
 
 	return m_lastError;
@@ -291,7 +295,7 @@ DiagnosticResponse ArduinoInterface::testDataPulse() {
 DiagnosticResponse ArduinoInterface::testTransferSpeed() {
 	m_lastCommand = LastCommand::lcRunDiagnostics;
 
-	// Port opned.  We need to receive about 10 * 256 bytes of data and verify its all valid
+	// Port opened.  We need to receive about 10 * 256 bytes of data and verify its all valid
 	m_lastError = runCommand(COMMAND_DIAGNOSTICS, '5');
 	if (m_lastError != DiagnosticResponse::drOK) return m_lastError;
 
@@ -301,10 +305,10 @@ DiagnosticResponse ArduinoInterface::testTransferSpeed() {
 	for (int a = 0; a <= 10; a++) {
 		unsigned long read;
 
-		read = m_comPort.read(buffer, sizeof(buffer));
+		read = m_comPort.read(buffer, sizeof buffer);
 
 		// With the timeouts we have this shouldn't happen
-		if (read != sizeof(buffer)) {
+		if (read != sizeof buffer) {
 			m_lastError = DiagnosticResponse::drUSBSerialBad;
 			applyCommTimeouts(false);
 			return m_lastError;
@@ -327,8 +331,8 @@ DiagnosticResponse ArduinoInterface::testTransferSpeed() {
 DiagnosticResponse ArduinoInterface::testCTS() {
 
 	for (int a = 1; a <= 10; a++) {
-		// Port opned.  We need to check what happens as the pin is toggled
-		m_lastError = runCommand(COMMAND_DIAGNOSTICS, (a & 1) ? '1' : '2');
+		// Port opened.  We need to check what happens as the pin is toggled
+		m_lastError = runCommand(COMMAND_DIAGNOSTICS, a & 1 ? '1' : '2');
 		if (m_lastError != DiagnosticResponse::drOK) {
 			m_lastCommand = LastCommand::lcRunDiagnostics;
 			closePort();
@@ -338,7 +342,7 @@ DiagnosticResponse ArduinoInterface::testCTS() {
 
 		bool ctsStatus = m_comPort.getCTSStatus();
 
-		// This doesnt actually run a command, this switches the CTS line back to its default setting
+		// This doesn't actually run a command, this switches the CTS line back to its default setting
 		m_lastError = runCommand(COMMAND_DIAGNOSTICS);
 
 		if (ctsStatus ^ ((a & 1) != 0)) {
@@ -380,7 +384,7 @@ DiagnosticResponse ArduinoInterface::attemptToSync(std::string& versionString, S
 		return DiagnosticResponse::drPortError;
 	}
 
-	memset(buffer, 0, sizeof(buffer));
+	memset(buffer, 0, sizeof buffer);
 	int counterNoData = 0;
 	int counterData = 0;
 	int bytesRead = 0;
@@ -391,15 +395,15 @@ DiagnosticResponse ArduinoInterface::attemptToSync(std::string& versionString, S
 		const auto timePassed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - startTime).count();
 
 		// Timeout after 8 seconds
-		if (timePassed>=8) 
-				return DiagnosticResponse::drPortError;
+		if (timePassed >= 8)
+			return DiagnosticResponse::drPortError;
 
 		size = port.read(&buffer[4], 1);
 		bytesRead += size;
 		// Was something read?
 		if (size) {
-			
-			if ((buffer[0] == '1') && (buffer[1] == 'V') && ((buffer[2] >= '1') && (buffer[2] <= '9')) && ((buffer[3] == ',') || (buffer[3] == '.')) && ((buffer[4] >= '0') && (buffer[4] <= '9'))) {
+
+			if (buffer[0] == '1' && buffer[1] == 'V' && (buffer[2] >= '1' && buffer[2] <= '9') && (buffer[3] == ',' || buffer[3] == '.') && (buffer[4] >= '0' && buffer[4] <= '9')) {
 
 				// Success
 				port.purgeBuffers();
@@ -407,7 +411,8 @@ DiagnosticResponse ArduinoInterface::attemptToSync(std::string& versionString, S
 				port.purgeBuffers();
 				versionString = &buffer[1];
 				return DiagnosticResponse::drOK;
-			} else {
+			}
+			else {
 				if (bytesRead) bytesRead--;
 			}
 
@@ -425,7 +430,7 @@ DiagnosticResponse ArduinoInterface::attemptToSync(std::string& versionString, S
 				port.closePort();
 				return DiagnosticResponse::drErrorReadingVersion;
 			}
-			if (((counterNoData % 7) == 6) && (bytesRead == 0)) {
+			if (counterNoData % 7 == 6 && bytesRead == 0) {
 				// Give it a kick
 				buffer[0] = COMMAND_VERSION;
 				size = port.write(&buffer[0], 1);
@@ -466,7 +471,7 @@ DiagnosticResponse ArduinoInterface::internalOpenPort(const std::wstring& portNa
 	// Try to get the version
 	DiagnosticResponse response = attemptToSync(versionString, port);
 	if (response != DiagnosticResponse::drOK) {
-		// It failed.  Issue a reset if we're allowed and try again
+		// It failed. Issue a reset if we're allowed and try again
 		if (triggerReset) {
 			port.setDTR(false);
 			port.setRTS(false);
@@ -490,7 +495,7 @@ DiagnosticResponse ArduinoInterface::internalOpenPort(const std::wstring& portNa
 			port.closePort();
 			return response;
 		}
-	} 
+	}
 
 	return response;
 }
@@ -507,7 +512,7 @@ DiagnosticResponse ArduinoInterface::openPort(const std::wstring& portName, bool
 	m_lastError = internalOpenPort(portName, enableCTSflowcontrol, true, versionString, m_comPort);
 	if (m_lastError != DiagnosticResponse::drOK) return m_lastError;
 
-	// it's possible theres still redundant data in the buffer
+	// it's possible there's still redundant data in the buffer
 	char buffer[2];
 	int counter = 0;
 	while (m_comPort.getBytesWaiting()) {
@@ -528,7 +533,7 @@ DiagnosticResponse ArduinoInterface::openPort(const std::wstring& portName, bool
 	m_version.deviceFlags2 = 0;
 	m_version.buildNumber = 0;
 
-	if ((m_version.major > 1) || ((m_version.major == 1) && (m_version.minor >= 9))) {
+	if (m_version.major > 1 || m_version.major == 1 && m_version.minor >= 9) {
 		m_lastError = runCommand(COMMAND_CHECK_FEATURES);
 		if (m_lastError != DiagnosticResponse::drOK) return m_lastError;
 		if (!deviceRead(&m_version.deviceFlags1, 1)) {
@@ -597,7 +602,7 @@ bool ArduinoInterface::trackContainsData(const RawTrackDataDD& trackData) const 
 	}
 
 	// More than this in a row and its bad
-	return ((ffcount < 20) && (zerocount < 20));
+	return ffcount < 20 && zerocount < 20;
 }
 
 // Turns on and off the writing interface.  If irError is returned the disk is write protected
@@ -642,9 +647,6 @@ DiagnosticResponse ArduinoInterface::enableWriting(const bool enable, const bool
 
 // Seek to track 0
 DiagnosticResponse ArduinoInterface::findTrack0() {
-#ifdef _DEBUG
-	return  DiagnosticResponse::drOK;
-#endif
 	m_lastCommand = LastCommand::lcRewind;
 
 	// And rewind to the first track
@@ -693,7 +695,7 @@ DiagnosticResponse ArduinoInterface::enableReading(const bool enable, const bool
 DiagnosticResponse ArduinoInterface::measureDriveRPM(float& rpm) {
 	m_lastCommand = LastCommand::lcMeasureRPM;
 
-	bool isV19 = (m_version.major > 1) || ((m_version.major == 1) && (m_version.minor >= 9));
+	bool isV19 = m_version.major > 1 || m_version.major == 1 && m_version.minor >= 9;
 	if (!isV19) return DiagnosticResponse::drOldFirmware;
 
 	// Query the RPM
@@ -704,7 +706,7 @@ DiagnosticResponse ArduinoInterface::measureDriveRPM(float& rpm) {
 	char buffer[11];
 	int index = 0;
 	int failCount = 0;
-	memset(buffer, 0, sizeof(buffer));
+	memset(buffer, 0, sizeof buffer);
 
 	// Read RPM
 	while (index < 10) {
@@ -730,11 +732,8 @@ DiagnosticResponse ArduinoInterface::measureDriveRPM(float& rpm) {
 // Checks to see what the density of the current disk is most likely to be.  Ideally this should be done while at track 0, probably lower head
 DiagnosticResponse ArduinoInterface::checkDiskCapacity(bool& isHD) {
 	m_lastCommand = LastCommand::lcCheckDensity;
-	//isHD = true;
-	//return DiagnosticResponse::drOK;
 
-
-	bool isV19 = (m_version.major > 1) || ((m_version.major == 1) && (m_version.minor >= 9));
+	bool isV19 = m_version.major > 1 || m_version.major == 1 && m_version.minor >= 9;
 	if (!isV19) return DiagnosticResponse::drOldFirmware;
 
 	if ((m_version.deviceFlags1 & FLAGS_DENSITYDETECT_ENABLED) == 0) {
@@ -793,7 +792,7 @@ DiagnosticResponse ArduinoInterface::setDiskCapacity(bool switchToHD_Disk) {
 // If the drive is on track 0, this does a test seek to -1 if supported
 DiagnosticResponse ArduinoInterface::performNoClickSeek() {
 	// And send the command and track.  This is sent as ASCII text as a result of terminal testing.  Easier to see whats going on
-	bool isV18 = (m_version.major > 1) || ((m_version.major == 1) && (m_version.minor >= 8));
+	bool isV18 = m_version.major > 1 || m_version.major == 1 && m_version.minor >= 8;
 	if (!isV18) return DiagnosticResponse::drOldFirmware;
 	if (!m_version.fullControlMod) return DiagnosticResponse::drOldFirmware;
 
@@ -807,7 +806,7 @@ DiagnosticResponse ArduinoInterface::performNoClickSeek() {
 			m_lastError = DiagnosticResponse::drReadResponseFailed;
 			return m_lastError;
 		}
-		// 'x' means we didnt check it
+		// 'x' means we didn't check it
 		if (status != 'x') m_diskInDrive = status == '1';
 
 		// Also read the write protect status
@@ -831,7 +830,7 @@ DiagnosticResponse ArduinoInterface::selectTrack(const unsigned char trackIndex,
 	}
 
 	// And send the command and track.  This is sent as ASCII text as a result of terminal testing.  Easier to see whats going on
-	bool isV18 = (m_version.major > 1) || ((m_version.major == 1) && (m_version.minor >= 8));
+	bool isV18 = m_version.major > 1 || m_version.major == 1 && m_version.minor >= 8;
 	char buf[8];
 	if (isV18) {
 		char flags = (int)searchSpeed;
@@ -866,7 +865,7 @@ DiagnosticResponse ArduinoInterface::selectTrack(const unsigned char trackIndex,
 
 	switch (result) {
 	case '2': m_lastError = DiagnosticResponse::drOK; break; // already at track.  No op needed.  V1.8 only
-	case '1': m_lastError = DiagnosticResponse::drOK;		 
+	case '1': m_lastError = DiagnosticResponse::drOK;
 		if (isV18) {
 			// Read extended data
 			char status;
@@ -874,7 +873,7 @@ DiagnosticResponse ArduinoInterface::selectTrack(const unsigned char trackIndex,
 				m_lastError = DiagnosticResponse::drReadResponseFailed;
 				return m_lastError;
 			}
-			// 'x' means we didnt check it
+			// 'x' means we didn't check it
 			if (status != 'x') m_diskInDrive = status == '1';
 
 			// Also read the write protect status
@@ -930,7 +929,7 @@ DiagnosticResponse ArduinoInterface::eraseCurrentTrack() {
 DiagnosticResponse ArduinoInterface::selectSurface(const DiskSurface side) {
 	m_lastCommand = LastCommand::lcSelectSurface;
 
-	m_lastError = runCommand((side == DiskSurface::dsUpper) ? COMMAND_HEAD0 : COMMAND_HEAD1);
+	m_lastError = runCommand(side == DiskSurface::dsUpper ? COMMAND_HEAD0 : COMMAND_HEAD1);
 
 	return m_lastError;
 }
@@ -956,8 +955,7 @@ void unpack(const unsigned char* data, unsigned char* output, const int maxLengt
 		// Each byte contains four pairs of bits that identify an MFM sequence to be encoded
 
 		for (int b = 6; b >= 0; b -= 2) {
-			unsigned char value = (data[index] >> b) & 3;
-			switch (value) {
+			switch (unsigned char value = data[index] >> b & 3) {
 			case 0:
 				// This can't happen, its invalid data but we account for 4 '0' bits
 				writeBit(output, pos, p2, 0, maxLength);
@@ -998,11 +996,11 @@ DiagnosticResponse ArduinoInterface::readCurrentTrack(void* trackData, const int
 	m_lastCommand = LastCommand::lcReadTrack;
 
 	// Length must be one of the two types
-	if ((dataLength == RAW_TRACKDATA_LENGTH_DD) && (m_isHDMode)) {
+	if (dataLength == RAW_TRACKDATA_LENGTH_DD && m_isHDMode) {
 		m_lastError = DiagnosticResponse::drMediaTypeMismatch;
 		return m_lastError;
 	}
-	if ((dataLength == RAW_TRACKDATA_LENGTH_HD) && (!m_isHDMode)) {
+	if (dataLength == RAW_TRACKDATA_LENGTH_HD && !m_isHDMode) {
 		m_lastError = DiagnosticResponse::drMediaTypeMismatch;
 		return m_lastError;
 	}
@@ -1041,7 +1039,7 @@ DiagnosticResponse ArduinoInterface::readCurrentTrack(void* trackData, const int
 		m_isStreaming = true;
 		m_abortStreaming = false;
 		m_abortSignalled = false;
-		
+
 		// We know what this is, but the A
 		applyCommTimeouts(true);
 
@@ -1050,7 +1048,7 @@ DiagnosticResponse ArduinoInterface::readCurrentTrack(void* trackData, const int
 			// More efficient to read several bytes in one go		
 			unsigned long bytesAvailable = m_comPort.getBytesWaiting();
 			if (bytesAvailable < 1) bytesAvailable = 1;
-			if (bytesAvailable > sizeof(tempReadBuffer)) bytesAvailable = sizeof(tempReadBuffer);
+			if (bytesAvailable > sizeof tempReadBuffer) bytesAvailable = sizeof tempReadBuffer;
 			unsigned long bytesRead = m_comPort.read(tempReadBuffer, m_abortSignalled ? 1 : bytesAvailable);
 
 			for (size_t a = 0; a < bytesRead; a++) {
@@ -1061,7 +1059,7 @@ DiagnosticResponse ArduinoInterface::readCurrentTrack(void* trackData, const int
 					slidingWindow[4] = tempReadBuffer[a];
 
 					// Watch the sliding window for the pattern we need
-					if ((slidingWindow[0] == 'X') && (slidingWindow[1] == 'Y') && (slidingWindow[2] == 'Z') && (slidingWindow[3] == SPECIAL_ABORT_CHAR) && (slidingWindow[4] == '1')) {
+					if (slidingWindow[0] == 'X' && slidingWindow[1] == 'Y' && slidingWindow[2] == 'Z' && slidingWindow[3] == SPECIAL_ABORT_CHAR && slidingWindow[4] == '1') {
 						m_isStreaming = false;
 						m_comPort.purgeBuffers();
 						m_lastError = timeout ? DiagnosticResponse::drNoDiskInDrive : DiagnosticResponse::drOK;
@@ -1076,7 +1074,7 @@ DiagnosticResponse ArduinoInterface::readCurrentTrack(void* trackData, const int
 
 					for (int i = 6; i >= 0; i -= 2) {
 						// Convert to other format
-						tmp2 = (tempReadBuffer[a] >> i) & 0x03;
+						tmp2 = tempReadBuffer[a] >> i & 0x03;
 						if (tmp2 == 3) tmp2 = 0;
 
 						outputByte <<= 2;
@@ -1129,7 +1127,7 @@ DiagnosticResponse ArduinoInterface::readCurrentTrack(void* trackData, const int
 			return m_lastError;
 		}
 
-		// Keep reading until he hit dataLength or a null byte is recieved
+		// Keep reading until he hit dataLength or a null byte is received
 		int bytePos = 0;
 		int readFail = 0;
 		for (;;) {
@@ -1157,36 +1155,77 @@ DiagnosticResponse ArduinoInterface::readCurrentTrack(void* trackData, const int
 }
 
 
-// Reads a complete rotation of the disk, and returns it using the callback function whcih can return FALSE to stop
+#ifndef _WIN32
+#define USE_THREADDED_READER
+#endif
+
+// Reads a complete rotation of the disk, and returns it using the callback function which can return FALSE to stop
 // An instance of RotationExtractor is required.  This is purely to save on re-allocations.  It is internally reset each time
-DiagnosticResponse ArduinoInterface::readRotation(RotationExtractor& extractor, const unsigned int maxOutputSize, RotationExtractor::MFMSample* firstOutputBuffer, RotationExtractor::IndexSequenceMarker& startBitPatterns, std::function<bool(RotationExtractor::MFMSample** mfmData, const unsigned int dataLengthInBits)> onRotation) {
+DiagnosticResponse ArduinoInterface::readRotation(RotationExtractor& extractor, const unsigned int maxOutputSize, RotationExtractor::MFMSample* firstOutputBuffer, RotationExtractor::IndexSequenceMarker& startBitPatterns, std::function<bool(RotationExtractor::MFMSample** mfmData, const unsigned int dataLengthInBits)> onRotation, bool useHalfPLL) {
 	m_lastCommand = LastCommand::lcReadTrackStream;
 
-	if ((m_version.major == 1) && (m_version.minor < 8)) {
+	if (m_version.major == 1 && m_version.minor < 8) {
 		m_lastError = DiagnosticResponse::drOldFirmware;
 		return m_lastError;
 	}
 
 	// Who would do this, right?
-	if ((maxOutputSize < 1) || (!firstOutputBuffer)) {
+	if (maxOutputSize < 1 || !firstOutputBuffer) {
 		m_lastError = DiagnosticResponse::drError;
 		return m_lastError;
 	}
 
-	const bool highPrecisionMode = (!m_isHDMode) && (m_version.deviceFlags1 & FLAGS_HIGH_PRECISION_SUPPORT);
-	m_lastError = runCommand(highPrecisionMode ? COMMAND_READTRACKSTREAM_HIGHPRECISION : COMMAND_READTRACKSTREAM);
+	const bool highPrecisionMode = !m_isHDMode && m_version.deviceFlags1 & FLAGS_HIGH_PRECISION_SUPPORT;
+	char mode = highPrecisionMode ? COMMAND_READTRACKSTREAM_HIGHPRECISION : COMMAND_READTRACKSTREAM;
+
+	if (mode == COMMAND_READTRACKSTREAM_HIGHPRECISION && m_version.deviceFlags1 & FLAGS_FLUX_READ && useHalfPLL) mode = COMMAND_READTRACKSTREAM_HALFPLL;
+
+	
+	m_lastError = runCommand(mode);
+
 	if (m_lastError != DiagnosticResponse::drOK) return m_lastError;
 
-	// Let the class know we're doing some streaming stuff
 	m_isStreaming = true;
+
+
+#ifdef USE_THREADDED_READER
+	std::mutex safetyLock;
+	// I was using a deque, but its much faster to just keep switching between two vectors
+	std::vector<unsigned char> readBuffer;
+	readBuffer.reserve(4096);
+	std::vector<unsigned char> tempReadBuffer;
+	tempReadBuffer.reserve(4096);
+#ifdef _WIN32
+	m_comPort.setReadTimeouts(100, 0);  // match linux
+#endif
+	std::thread* backgroundReader = new std::thread([this, &readBuffer, &safetyLock]() {
+#ifdef _WIN32
+		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+#endif
+		unsigned char buffer[1024];  // the LINUX serial buffer is only 512 bytes anyway
+		while (m_isStreaming) {
+			uint32_t waiting = m_comPort.justRead(buffer, 1024);
+			if (waiting>0) {
+				safetyLock.lock();				
+				readBuffer.insert(readBuffer.end(), buffer, buffer+waiting);
+				safetyLock.unlock();
+			} else
+				std::this_thread::sleep_for(std::chrono::microseconds(200));
+		}
+	});
+
+
+#else
+	applyCommTimeouts(true);
+	unsigned char tempReadBuffer[2048] = { 0 };
+#endif
+
+	// Let the class know we're doing some streaming stuff
 	m_abortStreaming = false;
 	m_abortSignalled = false;
 
 	// Number of times we failed to read anything
-	int readFail = 0;
-
-	// Buffer to read into
-	unsigned char tempReadBuffer[1024] = { 0 };
+	int32_t readFail = 0;
 
 	// Reset ready for extraction
 	extractor.reset(m_isHDMode);
@@ -1200,26 +1239,43 @@ DiagnosticResponse ArduinoInterface::readRotation(RotationExtractor& extractor, 
 	bool dataState = false;
 	bool isFirstByte = true;
 	unsigned char mfmSequences = 0;
-	applyCommTimeouts(true);
 
 	for (;;) {
 
 		// More efficient to read several bytes in one go		
-		unsigned long bytesAvailable = m_comPort.getBytesWaiting();
-		if (bytesAvailable < 1) bytesAvailable = 1;
-		if (bytesAvailable > sizeof(tempReadBuffer)) bytesAvailable = sizeof(tempReadBuffer);
-		unsigned long bytesRead = m_comPort.read(tempReadBuffer, m_abortSignalled ? 1 : bytesAvailable);
+#ifdef USE_THREADDED_READER
+		tempReadBuffer.resize(0); // should be just as fast as clear, but just in case
+		safetyLock.lock();
+		std::swap(tempReadBuffer, readBuffer);
+		safetyLock.unlock();
 
+		unsigned int bytesRead = tempReadBuffer.size();
+		
+		if (bytesRead < 1) std::this_thread::sleep_for(std::chrono::milliseconds(20)); 
+		for (const unsigned char byteRead : tempReadBuffer) {
+#else
+		unsigned int bytesAvailable = m_comPort.getBytesWaiting();
+		if (bytesAvailable < 1) bytesAvailable = 1;
+		if (bytesAvailable > sizeof tempReadBuffer) bytesAvailable = sizeof tempReadBuffer;
+		unsigned int bytesRead = m_comPort.read(tempReadBuffer, m_abortSignalled ? 1 : bytesAvailable);
 		for (size_t a = 0; a < bytesRead; a++) {
+			const unsigned char byteRead = tempReadBuffer[a];
+#endif
 			if (m_abortSignalled) {
 				// Make space
 				for (int s = 0; s < 4; s++) slidingWindow[s] = slidingWindow[s + 1];
 				// Append the new byte
-				slidingWindow[4] = tempReadBuffer[a];
+				slidingWindow[4] = byteRead;
 
 				// Watch the sliding window for the pattern we need
-				if ((slidingWindow[0] == 'X') && (slidingWindow[1] == 'Y') && (slidingWindow[2] == 'Z') && (slidingWindow[3] == SPECIAL_ABORT_CHAR) && (slidingWindow[4] == '1')) {
+				if (slidingWindow[0] == 'X' && slidingWindow[1] == 'Y' && slidingWindow[2] == 'Z' && slidingWindow[3] == SPECIAL_ABORT_CHAR && slidingWindow[4] == '1') {
 					m_isStreaming = false;
+#ifdef USE_THREADDED_READER
+					if (backgroundReader) {
+						if (backgroundReader->joinable()) backgroundReader->join();
+						delete backgroundReader;
+					}
+#endif
 					m_comPort.purgeBuffers();
 					m_lastError = timeout ? DiagnosticResponse::drError : DiagnosticResponse::drOK;
 					applyCommTimeouts(false);
@@ -1227,16 +1283,14 @@ DiagnosticResponse ArduinoInterface::readRotation(RotationExtractor& extractor, 
 				}
 			}
 			else {
-				unsigned char byteRead = tempReadBuffer[a];
-
 				unsigned char tmp;
-				RotationExtractor::MFMSequenceInfo sequence;
+				RotationExtractor::MFMSequenceInfo sequence{};
 				if (m_isHDMode) {
 					for (int i = 6; i >= 0; i -= 2) {
-						tmp = (byteRead >> i) & 0x03;
-						sequence.mfm = (RotationExtractor::MFMSequence)((tmp == 0x03) ? 0 : tmp);
-						sequence.timeNS = 4000 + ((unsigned int)sequence.mfm * 2000);
-						extractor.submitSequence(sequence, (tmp == 0x03));
+						tmp = byteRead >> i & 0x03;
+						sequence.mfm = (RotationExtractor::MFMSequence)(tmp == 0x03 ? 0 : tmp);
+						sequence.timeNS = 4000 + (unsigned int)sequence.mfm * 2000;
+						extractor.submitSequence(sequence, tmp == 0x03);
 					}
 				}
 				else {
@@ -1251,26 +1305,27 @@ DiagnosticResponse ArduinoInterface::readRotation(RotationExtractor& extractor, 
 						}
 						else {
 							if (dataState) {
-								unsigned short readSpeed = ((unsigned int)(byteRead & 0x7F) * 2000) / 128;
+								int32_t readSpeed = (unsigned int)(byteRead & 0x7F) * 2000 / 128;
 
-								tmp = (mfmSequences >> 6) & 0x03;
-								sequence.mfm = (tmp == 0) ? RotationExtractor::MFMSequence::mfm0000 : (RotationExtractor::MFMSequence)(tmp - 1);
-								sequence.timeNS = 3000 + ((unsigned int)sequence.mfm * 2000) + readSpeed;
+
+								tmp = mfmSequences >> 6 & 0x03;
+								sequence.mfm = tmp == 0 ? RotationExtractor::MFMSequence::mfm0000 : (RotationExtractor::MFMSequence)(tmp - 1);
+								sequence.timeNS = 3000 + (unsigned int)sequence.mfm * 2000 + (sequence.mfm == RotationExtractor::MFMSequence::mfm0000 ? -1000 : readSpeed);
 								extractor.submitSequence(sequence, (byteRead & 0x80) != 0);
 
-								tmp = (mfmSequences >> 4) & 0x03;
-								sequence.mfm = (tmp == 0) ? RotationExtractor::MFMSequence::mfm0000 : (RotationExtractor::MFMSequence)(tmp - 1);
-								sequence.timeNS = 3000 + ((unsigned int)sequence.mfm * 2000) + readSpeed;
+								tmp = mfmSequences >> 4 & 0x03;
+								sequence.mfm = tmp == 0 ? RotationExtractor::MFMSequence::mfm0000 : (RotationExtractor::MFMSequence)(tmp - 1);
+								sequence.timeNS = 3000 + (unsigned int)sequence.mfm * 2000 + (sequence.mfm == RotationExtractor::MFMSequence::mfm0000 ? -1000 : readSpeed);
 								extractor.submitSequence(sequence, false);
 
-								tmp = (mfmSequences >> 2) & 0x03;
-								sequence.mfm = (tmp == 0) ? RotationExtractor::MFMSequence::mfm0000 : (RotationExtractor::MFMSequence)(tmp - 1);
-								sequence.timeNS = 3000 + ((unsigned int)sequence.mfm * 2000) + readSpeed;
+								tmp = mfmSequences >> 2 & 0x03;
+								sequence.mfm = tmp == 0 ? RotationExtractor::MFMSequence::mfm0000 : (RotationExtractor::MFMSequence)(tmp - 1);
+								sequence.timeNS = 3000 + (unsigned int)sequence.mfm * 2000 + (sequence.mfm == RotationExtractor::MFMSequence::mfm0000 ? -1000 : readSpeed);
 								extractor.submitSequence(sequence, false);
 
-								tmp = (mfmSequences) & 0x03;
-								sequence.mfm = (tmp == 0) ? RotationExtractor::MFMSequence::mfm0000 : (RotationExtractor::MFMSequence)(tmp - 1);
-								sequence.timeNS = 3000 + ((unsigned int)sequence.mfm * 2000) + readSpeed;
+								tmp = mfmSequences & 0x03;
+								sequence.mfm = tmp == 0 ? RotationExtractor::MFMSequence::mfm0000 : (RotationExtractor::MFMSequence)(tmp - 1);
+								sequence.timeNS = 3000 + (unsigned int)sequence.mfm * 2000 + (sequence.mfm == RotationExtractor::MFMSequence::mfm0000 ? -1000 : readSpeed);
 								extractor.submitSequence(sequence, false);
 
 								dataState = false;
@@ -1283,18 +1338,18 @@ DiagnosticResponse ArduinoInterface::readRotation(RotationExtractor& extractor, 
 						}
 					}
 					else {
-						unsigned short readSpeed = (((unsigned long long)(((unsigned int)((byteRead & 0x07) * 16)) * 2000) / 128));
+						unsigned short readSpeed = (unsigned long long)((unsigned int)((byteRead & 0x07) * 16) * 2000) / 128;
 
 						// Now packet up the data in the format the rotation extractor expects it to be in
-						tmp = (byteRead >> 5) & 0x03;
-						sequence.mfm = (tmp == 0) ? RotationExtractor::MFMSequence::mfm0000 : (RotationExtractor::MFMSequence)(tmp - 1);
-						sequence.timeNS = 3000 + ((unsigned int)sequence.mfm * 2000) + readSpeed;
+						tmp = byteRead >> 5 & 0x03;
+						sequence.mfm = tmp == 0 ? RotationExtractor::MFMSequence::mfm0000 : (RotationExtractor::MFMSequence)(tmp - 1);
+						sequence.timeNS = 3000 + (unsigned int)sequence.mfm * 2000 + readSpeed;
 
 						extractor.submitSequence(sequence, (byteRead & 0x80) != 0);
 
-						tmp = (byteRead >> 3) & 0x03;
-						sequence.mfm = (tmp == 0) ? RotationExtractor::MFMSequence::mfm0000 : (RotationExtractor::MFMSequence)(tmp - 1);
-						sequence.timeNS = 3000 + ((unsigned int)sequence.mfm * 2000) + readSpeed;
+						tmp = byteRead >> 3 & 0x03;
+						sequence.mfm = tmp == 0 ? RotationExtractor::MFMSequence::mfm0000 : (RotationExtractor::MFMSequence)(tmp - 1);
+						sequence.timeNS = 3000 + (unsigned int)sequence.mfm * 2000 + readSpeed;
 
 						extractor.submitSequence(sequence, false);
 					}
@@ -1317,7 +1372,167 @@ DiagnosticResponse ArduinoInterface::readRotation(RotationExtractor& extractor, 
 					}
 				}
 				else {
-					if (extractor.totalTimeReceived() > (m_isHDMode ? 1200000000U : 600000000U))  {
+					if (extractor.totalTimeReceived() > (m_isHDMode ? 1200000000U : 600000000U)) {
+						// No data, stop
+						abortReadStreaming();
+						timeout = true;
+					}
+				}
+			}
+		}
+		if (bytesRead < 1) {
+			readFail++;
+			if (readFail > 30) {
+				m_abortStreaming = false; // force the 'abort' command to be sent
+				abortReadStreaming();
+				m_lastError = DiagnosticResponse::drReadResponseFailed;
+				m_isStreaming = false;
+#ifdef USE_THREADDED_READER
+				if (backgroundReader) {
+					if (backgroundReader->joinable()) backgroundReader->join();
+					delete backgroundReader;
+				}
+#endif
+				applyCommTimeouts(false);
+				return m_lastError;
+			}
+			else {
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+		}
+		else {
+			readFail = 0;
+		}
+	}
+}
+
+// This is experiment and as such is not currently in use
+#define MAX_FLUX_SIGNAL           31
+
+// RAW Counter Values
+#define MIN_FLUX_ALLOWED          48                      // in 62.5 time 
+#define MAX_FLUX_ALLOWED          (MIN_FLUX_ALLOWED+61)   // in 62.5 time - comes out as '30'
+#define MAX_FLUX_REPEAT           (MAX_FLUX_ALLOWED-7)    // in 62.5 time - comes out as '26'
+#define FLUX_REPEAT_OFFSET        (MAX_FLUX_REPEAT-MIN_FLUX_ALLOWED)    // The amount MAX_FLUX_SIGNAL represents in clock ticks, which is 3625ns
+
+// Reads a complete rotation of the disk, and returns it using the callback function which can return FALSE to stop
+// An instance of PLL is required.  This is purely to save on re-allocations.  It is internally reset each time
+DiagnosticResponse ArduinoInterface::readFlux(PLL::BridgePLL& pll, const unsigned int maxOutputSize, RotationExtractor::MFMSample* firstOutputBuffer, RotationExtractor::IndexSequenceMarker& startBitPatterns, std::function<bool(RotationExtractor::MFMSample** mfmData, const unsigned int dataLengthInBits)> onRotation) {
+	m_lastCommand = LastCommand::lcReadTrackStream;
+
+	if (!(m_version.deviceFlags1 & FLAGS_FLUX_READ) || m_isHDMode) {
+		// Fall back if not supported
+		return readRotation(*pll.rotationExtractor(), maxOutputSize, firstOutputBuffer, startBitPatterns, onRotation, false);
+	}
+
+	// Who would do this, right?
+	if (maxOutputSize < 1 || !firstOutputBuffer) {
+		m_lastError = DiagnosticResponse::drError;
+		return m_lastError;
+	}
+
+	m_lastError = runCommand(COMMAND_READTRACKSTREAM_FLUX);
+	if (m_lastError != DiagnosticResponse::drOK)
+		return m_lastError;
+	
+	// Let the class know we're doing some streaming stuff
+	m_isStreaming = true;
+	m_abortStreaming = false;
+	m_abortSignalled = false;
+
+	// Number of times we failed to read anything
+	int readFail = 0;
+
+	// Buffer to read into
+	unsigned char tempReadBuffer[2048] = { 0 };
+
+	// Sliding window for abort
+	char slidingWindow[5] = { 0,0,0,0,0 };
+	bool timeout = false;
+	bool dataState = false;
+	bool indexDetected = false;
+	unsigned char byte1 = 0;
+	applyCommTimeouts(true);
+
+	uint32_t fluxSoFar = 0;
+
+	pll.prepareExtractor(false, startBitPatterns);
+
+	for (;;) {
+
+		// More efficient to read several bytes in one go		
+		unsigned long bytesAvailable, bytesRead = 0;		
+		bytesAvailable = m_comPort.getBytesWaiting();
+		if (bytesAvailable < 1) bytesAvailable = 1;
+		if (bytesAvailable > sizeof tempReadBuffer) bytesAvailable = sizeof tempReadBuffer;
+		bytesRead = m_comPort.read(tempReadBuffer, m_abortSignalled ? 1 : bytesAvailable);
+
+		for (size_t a = 0; a < bytesRead; a++) {
+			if (m_abortSignalled) {
+				// Make space
+				for (int s = 0; s < 4; s++) slidingWindow[s] = slidingWindow[s + 1];
+				// Append the new byte
+				slidingWindow[4] = tempReadBuffer[a];
+
+				// Watch the sliding window for the pattern we need
+				if (slidingWindow[0] == 'X' && slidingWindow[1] == 'Y' && slidingWindow[2] == 'Z' && slidingWindow[3] == SPECIAL_ABORT_CHAR && slidingWindow[4] == '1') {
+					m_isStreaming = false;					
+					m_comPort.purgeBuffers();
+					m_lastError = timeout ? DiagnosticResponse::drError : DiagnosticResponse::drOK;
+					applyCommTimeouts(false);
+					return m_lastError;
+				}
+			}
+			else {
+				unsigned char byteRead = tempReadBuffer[a];
+
+				if (dataState) {
+
+					uint32_t flux[3];
+					flux[0] = byte1 & 0x1F;
+					flux[1] = byte1 >> 5 | byteRead >> 2 & 0x18;
+					flux[2] = byteRead & 0x1F;
+					indexDetected |= (byteRead & 0x80) != 0;
+
+					for (int a = 0; a < 3; a++) {
+						switch (flux[a]) {
+						case MAX_FLUX_SIGNAL:
+							fluxSoFar += (uint32_t)(62.5f * FLUX_REPEAT_OFFSET);
+							break;
+						default:
+							fluxSoFar += (uint32_t)((flux[a] * 2 + MIN_FLUX_ALLOWED) * 62.5f);
+							pll.submitFlux(fluxSoFar, indexDetected);
+							indexDetected = false;
+							fluxSoFar = 0;
+						}
+					}
+
+					dataState = false;
+				}
+				else {
+					// in 'false' mode we get the flux data
+					dataState = true;
+					byte1 = byteRead;
+				}
+
+
+				// Is it ready to extract?
+				if (pll.canExtract()) {
+					unsigned int bits = 0;
+					// Go!
+					if (pll.extractRotation(firstOutputBuffer, bits, maxOutputSize)) {
+						m_diskInDrive = true;
+
+						if (!onRotation(&firstOutputBuffer, bits)) {
+							// And if the callback says so we stop.
+							abortReadStreaming();
+						}
+						// Always save this back
+						pll.getIndexSequence(startBitPatterns);
+					}
+				}
+				else {
+					if (pll.totalTimeReceived() > (m_isHDMode ? 1200000000U : 600000000U)) {
 						// No data, stop
 						abortReadStreaming();
 						timeout = true;
@@ -1336,9 +1551,10 @@ DiagnosticResponse ArduinoInterface::readRotation(RotationExtractor& extractor, 
 				return m_lastError;
 			}
 			else {
-				std::this_thread::sleep_for(std::chrono::milliseconds(1));			
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 			}
-		} else {
+		}
+		else {
 			readFail = 0;
 		}
 	}
@@ -1346,7 +1562,7 @@ DiagnosticResponse ArduinoInterface::readRotation(RotationExtractor& extractor, 
 
 // Stops the read streaming immediately and any data in the buffer will be discarded.
 bool ArduinoInterface::abortReadStreaming() {
-	if ((m_version.major == 1) && (m_version.minor < 8)) {
+	if (m_version.major == 1 && m_version.minor < 8) {
 		return false;
 	}
 
@@ -1380,10 +1596,10 @@ inline int readBit(const unsigned char* buffer, const unsigned int maxLength, in
 			bit = 7;
 			pos++;
 		}
-		return (bit & 1) ? 0 : 1;
+		return bit & 1 ? 0 : 1;
 	}
 
-	int ret = (buffer[pos] >> bit) & 1;
+	int ret = buffer[pos] >> bit & 1;
 	bit--;
 	if (bit < 0) {
 		bit = 7;
@@ -1400,13 +1616,13 @@ inline int readBit(const unsigned char* buffer, const unsigned int maxLength, in
 DiagnosticResponse ArduinoInterface::writeCurrentTrackHD(const unsigned char* mfmData, const unsigned short numBytes, const bool writeFromIndexPulse) {
 	m_lastCommand = LastCommand::lcWriteTrack;
 
-	if ((m_version.major == 1) && (m_version.minor < 9)) return DiagnosticResponse::drOldFirmware;
+	if (m_version.major == 1 && m_version.minor < 9) return DiagnosticResponse::drOldFirmware;
 
 	// First step is we need to re-encode the supplied buffer into a packed format 
 	// Each nybble looks like: wwxxyyzz, each group is a code which is the transition time
 
 	// *4 is a worse case situation, ie: if everything was a 01.  The +128 is for any extra padding
-	const unsigned int maxOutSize = (numBytes * 4) + 16;
+	const unsigned int maxOutSize = numBytes * 4 + 16;
 	unsigned char* outputBuffer = (unsigned char*)malloc(maxOutSize);
 
 	if (!outputBuffer) {
@@ -1414,7 +1630,7 @@ DiagnosticResponse ArduinoInterface::writeCurrentTrackHD(const unsigned char* mf
 		return m_lastError;
 	}
 
-	// Original data was written from MSB downto LSB
+	// Original data was written from MSB down to LSB
 	int pos = 0;
 	int bit = 7;
 	unsigned int outputPos = 0;
@@ -1433,7 +1649,7 @@ DiagnosticResponse ArduinoInterface::writeCurrentTrackHD(const unsigned char* mf
 				b = readBit(mfmData, numBytes, pos, bit);
 				sequence = ((sequence << 1) & 0x7F) | b;
 				count++;
-			} while (((sequence & 0x08) == 0) && (pos < numBytes + 8));
+			} while ((sequence & 0x08) == 0 && pos < numBytes + 8);
 
 			// Validate range
 			if (count < 2) count = 2;  // <2 would be a 11 sequence, not allowed
@@ -1455,12 +1671,12 @@ DiagnosticResponse ArduinoInterface::writeCurrentTrackHD(const unsigned char* mf
 
 		output++;
 		outputPos++;
-		if (outputPos >= maxOutSize-1) {
+		if (outputPos >= maxOutSize - 1) {
 			// should never happen
 			free(outputBuffer);
 			m_lastError = DiagnosticResponse::drSendParameterFailed;
 			return m_lastError;
-		}	
+		}
 	}
 
 	// 0 means stop
@@ -1478,7 +1694,7 @@ DiagnosticResponse ArduinoInterface::writeCurrentTrackHD(const unsigned char* mf
 #define PRECOMP_ERLY 0x04   
 #define PRECOMP_LATE 0x08   
 
-/* If we have a look at the previous and next three bits, assume the current is a '1', then these are the only valid combinations that coudl be allowed
+/* If we have a look at the previous and next three bits, assume the current is a '1', then these are the only valid combinations that could be allowed
 	I have chosen the PRECOMP rule based on trying to get the current '1' as far away as possible from the nearest '1'
 
 	   LAST		 CURRENT      NEXT			PRECOMP			Hex Value
@@ -1493,11 +1709,11 @@ DiagnosticResponse ArduinoInterface::writeCurrentTrackHD(const unsigned char* mf
 	1	0	0    	1	   0	1	0       Early			0x4A
 */
 
-// The precomp version of the above. Dont use the above function directly to write precomp mode, it wont work.  Data must be passed with an 0xAA each side at least
+// The precomp version of the above. Don't use the above function directly to write precomp mode, it wont work.  Data must be passed with an 0xAA each side at least
 DiagnosticResponse ArduinoInterface::writeCurrentTrackPrecomp(const unsigned char* mfmData, const unsigned short numBytes, const bool writeFromIndexPulse, bool usePrecomp) {
 	m_lastCommand = LastCommand::lcWriteTrack;
 
-	if ((m_version.major == 1) && (m_version.minor < 8)) return DiagnosticResponse::drOldFirmware;
+	if (m_version.major == 1 && m_version.minor < 8) return DiagnosticResponse::drOldFirmware;
 
 	if (m_isHDMode) return writeCurrentTrackHD(mfmData, numBytes, writeFromIndexPulse);
 
@@ -1507,7 +1723,7 @@ DiagnosticResponse ArduinoInterface::writeCurrentTrackPrecomp(const unsigned cha
 	//		 yy is: 0: 4us,		1: 6us,		2: 8us,		3: 10us
 
 	// *4 is a worse case situation, ie: if everything was a 01.  The +128 is for any extra padding
-	const unsigned int maxOutSize = (numBytes * 4) + 16;
+	const unsigned int maxOutSize = numBytes * 4 + 16;
 	unsigned char* outputBuffer = (unsigned char*)malloc(maxOutSize);
 
 	if (!outputBuffer) {
@@ -1533,14 +1749,14 @@ DiagnosticResponse ArduinoInterface::writeCurrentTrackPrecomp(const unsigned cha
 			// See how many zero bits there are before we hit a 1
 			do {
 				b = readBit(mfmData, numBytes, pos, bit);
-				sequence = ((sequence << 1) & 0x7F) | b;
+				sequence = sequence << 1 & 0x7F | b;
 				count++;
-			} while (((sequence & 0x08) == 0) && (pos < numBytes + 8));
+			} while ((sequence & 0x08) == 0 && pos < numBytes + 8);
 
 			// Validate range
 			if (count < 2) count = 2;  // <2 would be a 11 sequence, not allowed
 			if (count > 5) count = 5;  // max we support 01, 001, 0001, 00001
-			
+
 			// Write to stream. Based on the rules above we apply some precomp
 			int precomp = 0;
 			if (usePrecomp) {
@@ -1564,7 +1780,7 @@ DiagnosticResponse ArduinoInterface::writeCurrentTrackPrecomp(const unsigned cha
 			}
 			else precomp = PRECOMP_NONE;
 
-			*output |= ((lastCount - 2) | precomp) << (i * 4);
+			*output |= (lastCount - 2 | precomp) << i * 4;
 			lastCount = count;
 		}
 
@@ -1598,11 +1814,11 @@ DiagnosticResponse ArduinoInterface::internalWriteTrack(const unsigned char* dat
 	m_lastCommand = LastCommand::lcWriteTrack;
 
 	// Fall back if older firmware
-	if ((m_version.major == 1) && (m_version.minor < 8) && usePrecomp) {
+	if (m_version.major == 1 && m_version.minor < 8 && usePrecomp) {
 		return DiagnosticResponse::drOldFirmware;
 	}
 
-	m_lastError = runCommand(m_isHDMode ? COMMAND_WRITETRACK : (usePrecomp ? COMMAND_WRITETRACKPRECOMP : COMMAND_WRITETRACK));
+	m_lastError = runCommand(m_isHDMode ? COMMAND_WRITETRACK : usePrecomp ? COMMAND_WRITETRACKPRECOMP : COMMAND_WRITETRACK);
 	if (m_lastError != DiagnosticResponse::drOK) return m_lastError;
 
 	unsigned char chr;
@@ -1624,7 +1840,7 @@ DiagnosticResponse ArduinoInterface::internalWriteTrack(const unsigned char* dat
 	// HD doesn't need the length as the data is null terminated
 	if (!m_isHDMode) {
 		// Now we send the number of bytes we're planning on transmitting
-		unsigned char b = (numBytes >> 8);
+		unsigned char b = numBytes >> 8;
 		if (!deviceWrite(&b, 1)) {
 			m_lastError = DiagnosticResponse::drSendParameterFailed;
 			return m_lastError;
@@ -1689,7 +1905,7 @@ DiagnosticResponse ArduinoInterface::internalWriteTrack(const unsigned char* dat
 DiagnosticResponse ArduinoInterface::eraseFluxOnTrack() {
 	m_lastCommand = LastCommand::lcEraseFlux;
 
-	if ((m_version.major == 1) && ((m_version.minor < 9) || ((m_version.minor == 9) && (m_version.buildNumber < 18)))) {
+	if (m_version.major == 1 && (m_version.minor < 9 || m_version.minor == 9 && m_version.buildNumber < 18)) {
 		m_lastError = DiagnosticResponse::drOldFirmware;
 		return m_lastError;
 	}
@@ -1721,24 +1937,24 @@ DiagnosticResponse ArduinoInterface::eraseFluxOnTrack() {
 	return m_lastError;
 }
 
-#define FLUX_OFFSET				42     // Minimum timer value
+#define FLUX_OFFSET				44     // Minimum timer value
 #define FLUX_MULTIPLIER_TIME_DB	125    // Our flux writing resolution in nanoseconds
 #define FLUX_MINIMUM_NS         (DWORD)(FLUX_OFFSET*62.5f)
 
 #define FLUX_MINIMUM_DB		   (FLUX_MINIMUM_NS / FLUX_MULTIPLIER_TIME_DB)  // Minimum time in DB time
 
 #define FLUX_NOFLUX_OFFSET      5    // Starting value when 'no flux' is written. 
-#define FLUX_MINSAFE_OFFSET     5    // This is also the safe minimum per byte so we dont overrun the serial port
+#define FLUX_MINSAFE_OFFSET     5    // This is also the safe minimum per byte so we don't overrun the serial port
 
 #define FLUX_MINIMUM_PER_8_NS   ((FLUX_MINIMUM_DB + FLUX_MINSAFE_OFFSET) * 8)		// Minimum time per 8 flux timings allowed in total in ns
 #define FLUX_TIME_10000NS_DB    ((10000/FLUX_MULTIPLIER_TIME_DB)-FLUX_MINIMUM_DB)   // DB number for 10000ns (10us)
 
-#define FLUX_REPEAT_BLANK_DB    29    // The highest single amount of delay before a flux. This DOES NOT inlude FLUX_MINIMUM_DB
+#define FLUX_REPEAT_BLANK_DB    29    // The highest single amount of delay before a flux. This DOES NOT include FLUX_MINIMUM_DB
 #define FLUX_REPEAT_COUNTER     (FLUX_MINIMUM_DB+FLUX_MINSAFE_OFFSET)
 
 #define FLUX_SPECIAL_CODE_BLANK 30    // This special code causes DB to skip 3125ns of time without a flux transition.
 #define FLUX_SPECIAL_CODE_END   31    // This special code causes the writing to finish
-#define FLUX_JITTER				2        // Amount of time taken off of the revolution time incase there's some jitter (x FLUX_MULTIPLIER_TIME)
+#define FLUX_JITTER				2        // Amount of time taken off of the revolution time in case there's some jitter (x FLUX_MULTIPLIER_TIME)
 #define BIT(x)					(1 << x)  // Quick mapping of a bit to bitmask for that bit
 #define BITSET(byte, x)			(byte & BIT(x)) // Quick check of bit set
 #define GET_BIT_IF_SET(byte,inputBit,outputBit) (BITSET(byte, inputBit)?BIT(outputBit):0)   // If inputBit in byte is set then returns outputBit as a mask
@@ -1802,10 +2018,10 @@ DWORD validateBlock(Times8& block) {
 // Append a fluxTime to a block. fluxTime is in DB time. timingsExtra is a running count of extra data that was needed to make blocks valid
 void appendToBlock(DWORD fluxTime, DWORD& timingsExtra, Times8& currentBlock, std::vector<Times8>& output) {
 	DWORD timingsAdjusted = 0;
-	// Add extra blocks if this is longer than the 'dont write' repeat interval
+	// Add extra blocks if this is longer than the 'don't write' repeat interval
 	while (fluxTime > FLUX_REPEAT_BLANK_DB) {
 		// Re-claim some time
-		if ((timingsExtra) && (fluxTime > FLUX_REPEAT_BLANK_DB + 1)) {
+		if (timingsExtra && fluxTime > FLUX_REPEAT_BLANK_DB + 1) {
 			fluxTime--;
 			timingsExtra--;
 		}
@@ -1820,12 +2036,12 @@ void appendToBlock(DWORD fluxTime, DWORD& timingsExtra, Times8& currentBlock, st
 	}
 
 	// Re-claim some time
-	if ((timingsExtra) && (fluxTime > FLUX_MINSAFE_OFFSET)) {
+	if (timingsExtra && fluxTime > FLUX_MINSAFE_OFFSET) {
 		fluxTime--;
 		timingsExtra--;
 	}
 
-	// Dont forget the actual data
+	// Don't forget the actual data
 	currentBlock.times[currentBlock.numUsed++] = (uint8_t)fluxTime;
 	if (currentBlock.numUsed >= 8) {
 		timingsAdjusted += validateBlock(currentBlock);
@@ -1838,7 +2054,7 @@ void appendToBlock(DWORD fluxTime, DWORD& timingsExtra, Times8& currentBlock, st
 DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTimes, const DWORD offsetFromIndex, const float driveRPM, bool compensateFluxTimings, bool terminateAtIndex) {
 	m_lastCommand = LastCommand::lcWriteFlux;
 
-	if ((m_version.major == 1) && ((m_version.minor < 9) || ((m_version.minor == 9) && (m_version.buildNumber < 21)))) {
+	if (m_version.major == 1 && (m_version.minor < 9 || m_version.minor == 9 && m_version.buildNumber < 22)) {
 		m_lastError = DiagnosticResponse::drOldFirmware;
 		return m_lastError;
 	}
@@ -1848,7 +2064,7 @@ DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTim
 	}
 
 	// Assume this is an unformatted track
-	if (fluxTimes.size() < 1) {
+	if (fluxTimes.empty()) {
 		m_lastError = eraseFluxOnTrack();
 		return m_lastError;
 	}
@@ -1869,9 +2085,9 @@ DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTim
 		if (t > 4500) ddStyleCount++;
 		if (t < 3500) hdStyleCount++;
 		DWORD tmp = (t + 1000) / 2000;
-		if (t < FLUX_MINIMUM_NS) 
+		if (t < FLUX_MINIMUM_NS)
 			t = FLUX_MINIMUM_NS;
-		t = ((t - FLUX_MINIMUM_NS) + (FLUX_MULTIPLIER_TIME_DB / 2)) / FLUX_MULTIPLIER_TIME_DB;
+		t = (t - FLUX_MINIMUM_NS + FLUX_MULTIPLIER_TIME_DB / 2) / FLUX_MULTIPLIER_TIME_DB;
 		dbTime.push_back(t);
 		totalFluxTime += t + FLUX_MINIMUM_DB;
 		if (t > FLUX_TIME_10000NS_DB) existsOver10000 = true;
@@ -1890,11 +2106,11 @@ DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTim
 		DWORD lastValue = 0;
 		bool unformatted = true;
 
-		// This picks up 'unformatted track' simulation output from HxC and replaces it with a proper unformatted track, if thats what it is.
+		// This picks up 'unformatted track' simulation output from HxC and replaces it with a proper unformatted track, if that's what it is.
 		int percentageAllowed = 50;
 		for (size_t i = 1; i < 6; i++) {
 			int percentageOfFlux = fluxTimeCounters[i] * 100 / totalCounter;
-			if (((int)abs(percentageOfFlux - percentageAllowed)) <= (int)(percentageAllowed + (7 - i))) {
+			if ((int)abs(percentageOfFlux - percentageAllowed) <= (int)(percentageAllowed + (7 - i))) {
 				// Within the allowed window of 'randomness' for unformatted
 				percentageAllowed /= 2;
 				continue;
@@ -1919,13 +2135,13 @@ DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTim
 	// Step 2: calculate the time taken for a full revolution in nanoseconds
 	const uint64_t rpmNanoSeconds = (uint64_t)(60000000000.0f / driveRPM);
 	// Convert it to DB time
-	const uint64_t rpmInDBTime = (rpmNanoSeconds / FLUX_MULTIPLIER_TIME_DB) - FLUX_JITTER;
+	const uint64_t rpmInDBTime = rpmNanoSeconds / FLUX_MULTIPLIER_TIME_DB - FLUX_JITTER;
 
 	// Step 3: Make the data fit the revolution
 	if (compensateFluxTimings) {
 		if (totalFluxTime < rpmInDBTime - 100) {
 			// No, not really. First, lets increase all the really slow pulses under FLUX_MINSAFE_OFFSET
-			while (totalFluxTime < rpmInDBTime - 1) {
+			while (totalFluxTime < rpmInDBTime - 100) {
 				bool madeChanges = false;
 				for (DWORD& t : dbTime) {
 					if (t < FLUX_MINSAFE_OFFSET) {
@@ -1934,25 +2150,15 @@ DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTim
 						madeChanges = true;
 
 						if (t < FLUX_MINSAFE_OFFSET) existsUnderMinimum = true;
-						if (totalFluxTime >= rpmInDBTime - 1) break;
+						if (totalFluxTime >= rpmInDBTime - 100) break;
 					}
 				}
 				if (!existsUnderMinimum) break;
 				if (!madeChanges) break;
-			}
-
-			// Are we still under? If so, increase everything
-			if (totalFluxTime < rpmInDBTime - 1) {
-				// Increase every sample
-				for (DWORD& t : dbTime) {
-					t++;
-					totalFluxTime++;
-					if (totalFluxTime >= rpmInDBTime - 1) break;
-				}
-			}
+			}			
 		}
 		else {
-			if (totalFluxTime > rpmInDBTime - 1) {
+			if (totalFluxTime > rpmInDBTime - 10) {
 				// Do we have too much data?  First, lets shorten some of the really long flux transitions, ie: over 10000ns
 				if (existsOver10000) {
 					while (totalFluxTime >= rpmInDBTime) {
@@ -1963,7 +2169,7 @@ DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTim
 								totalFluxTime--;
 
 								if (t > FLUX_TIME_10000NS_DB) existsOver10000 = true;
-								if (totalFluxTime < rpmInDBTime) break;
+								if (totalFluxTime < rpmInDBTime - 10) break;
 							}
 						}
 						if (!existsOver10000) break;
@@ -2004,7 +2210,7 @@ DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTim
 	}
 
 	for (const DWORD& t : dbTime) appendToBlock(t, timingsOver, block, fluxTimesGrouped);
-	// Dont forget the final block
+	// Don't forget the final block
 	if (block.numUsed) {
 		// Add the special break codes
 		for (int i = block.numUsed; i < 8; i++) block.times[i] = FLUX_SPECIAL_CODE_END;
@@ -2019,8 +2225,8 @@ DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTim
 	}
 
 	// Hmm, this could be an issue
-	if ((timingsOver >= FLUX_JITTER) && (compensateFluxTimings)) {
-		// We'll look at the blocks of 8, and see if theres any we can shorten.  Its rare though
+	if (timingsOver >= FLUX_JITTER && compensateFluxTimings) {
+		// We'll look at the blocks of 8, and see if there's any we can shorten.  Its rare though
 		for (Times8& block : fluxTimesGrouped) {
 			DWORD total = 0;
 			// See how long this block is
@@ -2029,7 +2235,7 @@ DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTim
 			if (total > FLUX_MINIMUM_PER_8_NS) {
 				// Re-claim from this
 				for (size_t a = 0; a < block.numUsed; a++) {
-					if ((block.times[a]) && (block.times[a] <= FLUX_REPEAT_BLANK_DB)) {
+					if (block.times[a] && block.times[a] <= FLUX_REPEAT_BLANK_DB) {
 						total--;
 						block.times[a]--;
 						timingsOver--;
@@ -2054,11 +2260,11 @@ DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTim
 	flux.push_back(firstFlux);   // special value to get it started
 
 	for (const Times8& block : fluxTimesGrouped) {
-		flux.push_back((block.a & 0x1F) | GET_BIT_IF_SET(block.b, 4, 5) | GET_BIT_IF_SET(block.c, 4, 6) | GET_BIT_IF_SET(block.d, 4, 7));
-		flux.push_back((block.b & 0x0F) | ((block.c & 0x0F) << 4));
-		flux.push_back((block.d & 0x0F) | ((block.e & 0x0F) << 4));
-		flux.push_back((block.f & 0x1F) | GET_BIT_IF_SET(block.g, 4, 5) | GET_BIT_IF_SET(block.h, 4, 6) | GET_BIT_IF_SET(block.e, 4, 7));
-		flux.push_back((block.g & 0x0F) | ((block.h & 0x0F) << 4));
+		flux.push_back(block.a & 0x1F | GET_BIT_IF_SET(block.b, 4, 5) | GET_BIT_IF_SET(block.c, 4, 6) | GET_BIT_IF_SET(block.d, 4, 7));
+		flux.push_back(block.b & 0x0F | (block.c & 0x0F) << 4);
+		flux.push_back(block.d & 0x0F | (block.e & 0x0F) << 4);
+		flux.push_back(block.f & 0x1F | GET_BIT_IF_SET(block.g, 4, 5) | GET_BIT_IF_SET(block.h, 4, 6) | GET_BIT_IF_SET(block.e, 4, 7));
+		flux.push_back(block.g & 0x0F | (block.h & 0x0F) << 4);
 	}
 
 	m_lastError = runCommand(COMMAND_WRITEFLUX);
@@ -2081,20 +2287,20 @@ DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTim
 	}
 
 	// Send the offset from index in ARDUINO ticks
-	uint32_t t = ceil(((float)offsetFromIndex / (driveRPM / 300.0f)) / 62.5f);
+	uint32_t t = (uint32_t)ceil((float)offsetFromIndex / (driveRPM / 300.0f) / 62.5f);
 	// Send the three bytes containing this.
 	unsigned char amount[4];
 	amount[0] = t & 0xFF;
-	amount[1] = (t>>8) & 0xFF;
-	amount[2] = (t>>16) & 0xFF;
+	amount[1] = t >> 8 & 0xFF;
+	amount[2] = t >> 16 & 0xFF;
 	amount[3] = terminateAtIndex ? 1 : 0;   // flags
 	if (!deviceWrite((const void*)amount, 4)) {
 		m_lastError = DiagnosticResponse::drSendDataFailed;
 		return m_lastError;
 	}
-	
+
 	// Send the actual data
-	if (!deviceWrite((const void*)flux.data(), flux.size())) {
+	if (!deviceWrite((const void*)flux.data(), (unsigned int)flux.size())) {
 		m_lastError = DiagnosticResponse::drSendDataFailed;
 		return m_lastError;
 	}
@@ -2106,7 +2312,7 @@ DiagnosticResponse ArduinoInterface::writeFlux(const std::vector<DWORD>& fluxTim
 	}
 
 	// If this is a '1' then the Arduino didn't miss a single bit!
-	if ((response != '1') && (response != 'I')) {
+	if (response != '1' && response != 'I') {
 		switch (response) {
 		case 'X': m_lastError = DiagnosticResponse::drWriteTimeout;  break;
 		case 'Y': m_lastError = DiagnosticResponse::drFramingError; break;
@@ -2133,8 +2339,8 @@ void ArduinoInterface::enumeratePorts(std::vector<std::wstring>& portList) {
 
 	for (const SerialIO::SerialPortInformation& port : prts) {
 		// Skip any Greaseweazle boards 
-		if ((port.vid == 0x1209) && (port.pid == 0x4d69)) continue;
-		if ((port.vid == 0x1209) && (port.pid == 0x0001)) continue;
+		if (port.vid == 0x1209 && port.pid == 0x4d69) continue;
+		if (port.vid == 0x1209 && port.pid == 0x0001) continue;
 		if (port.productName == L"Greaseweazle") continue;
 		if (port.instanceID.find(L"\\GW") != std::wstring::npos) continue;
 
@@ -2197,7 +2403,7 @@ bool ArduinoInterface::deviceRead(void* target, const unsigned int numBytes, con
 		if (failIfNotAllRead) return false;
 
 		// Clear the unread bytes
-		char* target2 = ((char*)target) + read;
+		char* target2 = (char*)target + read;
 		memset(target2, 0, numBytes - read);
 	}
 
@@ -2214,7 +2420,7 @@ DiagnosticResponse ArduinoInterface::eepromRead(unsigned char position, unsigned
 	m_lastCommand = LastCommand::lcEEPROMRead;
 
 	// Fall back if older firmware
-	if ((m_version.major == 1) && (m_version.minor < 9)) {
+	if (m_version.major == 1 && m_version.minor < 9) {
 		return DiagnosticResponse::drOldFirmware;
 	}
 
@@ -2240,7 +2446,7 @@ DiagnosticResponse ArduinoInterface::eepromWrite(unsigned char position, unsigne
 	m_lastCommand = LastCommand::lcEEPROMWrite;
 
 	// Fall back if older firmware
-	if ((m_version.major == 1) && (m_version.minor < 9)) {
+	if (m_version.major == 1 && m_version.minor < 9) {
 		return DiagnosticResponse::drOldFirmware;
 	}
 
@@ -2279,7 +2485,7 @@ DiagnosticResponse ArduinoInterface::eeprom_IsAdvancedController(bool& enabled) 
 		if (r != DiagnosticResponse::drOK) return r;
 	}
 
-	enabled = ((ret[0] == 0x52) && (ret[1] == 0x6F) && (ret[2] == 0x62) && (ret[3] == 0x53));
+	enabled = ret[0] == 0x52 && ret[1] == 0x6F && ret[2] == 0x62 && ret[3] == 0x53;
 	m_lastError = DiagnosticResponse::drOK;
 	return m_lastError;
 }
@@ -2288,11 +2494,11 @@ DiagnosticResponse ArduinoInterface::eeprom_IsDrawbridgePlusMode(bool& enabled) 
 	unsigned char ret[2];
 
 	for (int a = 0; a < 2; a++) {
-		DiagnosticResponse r = eepromRead(a+4, ret[a]);
+		DiagnosticResponse r = eepromRead(a + 4, ret[a]);
 		if (r != DiagnosticResponse::drOK) return r;
 	}
 
-	enabled = (ret[0] == 0x2B) && (ret[1] == 0xB2);
+	enabled = ret[0] == 0x2B && ret[1] == 0xB2;
 	m_lastError = DiagnosticResponse::drOK;
 	return m_lastError;
 }
@@ -2302,11 +2508,11 @@ DiagnosticResponse ArduinoInterface::eeprom_IsDensityDetectDisabled(bool& enable
 	unsigned char ret[2];
 
 	for (int a = 0; a < 2; a++) {
-		DiagnosticResponse r = eepromRead(a+6, ret[a]);
+		DiagnosticResponse r = eepromRead(a + 6, ret[a]);
 		if (r != DiagnosticResponse::drOK) return r;
 	}
 
-	enabled = ((ret[0] == 0x44) && (ret[1] == 0x53));
+	enabled = ret[0] == 0x44 && ret[1] == 0x53;
 	m_lastError = DiagnosticResponse::drOK;
 	return m_lastError;
 }
@@ -2315,11 +2521,11 @@ DiagnosticResponse ArduinoInterface::eeprom_IsSlowSeekMode(bool& enabled) {
 	unsigned char ret[2];
 
 	for (int a = 0; a < 2; a++) {
-		DiagnosticResponse r = eepromRead(a+8, ret[a]);
+		DiagnosticResponse r = eepromRead(a + 8, ret[a]);
 		if (r != DiagnosticResponse::drOK) return r;
 	}
 
-	enabled = (ret[0] == 0x53) && (ret[1] == 0x77);
+	enabled = ret[0] == 0x53 && ret[1] == 0x77;
 	m_lastError = DiagnosticResponse::drOK;
 	return m_lastError;
 }
@@ -2332,7 +2538,7 @@ DiagnosticResponse ArduinoInterface::eeprom_IsIndexAlignMode(bool& enabled) {
 		if (r != DiagnosticResponse::drOK) return r;
 	}
 
-	enabled = (ret[0] == 0x69) && (ret[1] == 0x61);
+	enabled = ret[0] == 0x69 && ret[1] == 0x61;
 	m_lastError = DiagnosticResponse::drOK;
 	return m_lastError;
 }

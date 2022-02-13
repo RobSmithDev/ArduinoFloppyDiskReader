@@ -1,6 +1,6 @@
 /* ArduinoFloppyReaderWin aka DrawBridge Windows App
 *
-* Copyright (C) 2017-2021 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2022 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This program is free software; you can redistribute it and/or
@@ -383,6 +383,7 @@ void CArduinoFloppyReaderWinDlg::runThreadRead(CRunningDlg* dlg) {
 
 	// Analysis was complete and found some data.  Run the reader
 	const unsigned int lastTrack = m_readPage->is82TrackMode() ? 82 : 80;
+	bool fluxMode = m_readPage->isExperimentalMode();
 	dlg->resetProgress(lastTrack * 2);
 
 	auto callback = [this, dlg](const int currentTrack, const ArduinoFloppyReader::DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound, const int maxSectors, ArduinoFloppyReader::CallbackOperation operation) -> ArduinoFloppyReader::WriteResponse {
@@ -413,6 +414,7 @@ void CArduinoFloppyReaderWinDlg::runThreadRead(CRunningDlg* dlg) {
 
 	bool hdMode = false;
 
+
 	// Detect disk speed
 	if(m_mediadensity.GetCurSel() == 0) {
 		if (((v.major == 1) && (v.minor >= 9)) || (v.major > 1)) {
@@ -435,9 +437,9 @@ void CArduinoFloppyReaderWinDlg::runThreadRead(CRunningDlg* dlg) {
 
 
 #ifdef _DEBUG
-	readerResult = (m_readPage->getImageType() == CReadFromDiskPage::ImageType::itSCP) ? writer.DiskToSCP(m_readPage->getFilename(), hdMode, lastTrack, 2, callback) : writer.DiskToADF(m_readPage->getFilename(), hdMode, lastTrack, callback);
+	readerResult = (m_readPage->getImageType() == CReadFromDiskPage::ImageType::itSCP) ? writer.DiskToSCP(m_readPage->getFilename(), hdMode, lastTrack, 2, callback, fluxMode) : writer.DiskToADF(m_readPage->getFilename(), hdMode, lastTrack, callback);
 #else
-	readerResult = (m_readPage->getImageType() == CReadFromDiskPage::ImageType::itSCP) ? writer.DiskToSCP(m_readPage->getFilename(), hdMode, lastTrack, 3, callback) : writer.DiskToADF(m_readPage->getFilename(), hdMode, lastTrack, callback);
+	readerResult = (m_readPage->getImageType() == CReadFromDiskPage::ImageType::itSCP) ? writer.DiskToSCP(m_readPage->getFilename(), hdMode, lastTrack, 3, callback, fluxMode) : writer.DiskToADF(m_readPage->getFilename(), hdMode, lastTrack, callback);
 #endif
 
 	std::string lastError = writer.getLastError();

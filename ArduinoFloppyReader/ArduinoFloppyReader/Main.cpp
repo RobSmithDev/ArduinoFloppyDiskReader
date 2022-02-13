@@ -1,6 +1,6 @@
-/* ArduinoFloppyReader (and writer)
+/* DRAWBRIDGE aka ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017-2021 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2022 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This program is free software; you can redistribute it and/or
@@ -339,14 +339,14 @@ void disk2ADF(const std::wstring& filename) {
 
 	// Detect disk speed
 	const ArduinoFloppyReader::FirmwareVersion v = writer.getFirwareVersion();
-
+	/*   DEBUG REMOVE THIS
 	if (((v.major == 1) && (v.minor >= 9)) || (v.major > 1)) {
 		if (writer.GuessDiskDensity(hdMode) != ArduinoFloppyReader::ADFResult::adfrComplete) {
 			printf("Unable to work out the density of the disk inserted.\n");
 			return;
 		}
 	}
-
+	*/
 
 	// Get the current firmware version.  Only valid if openDevice is successful
 	if ((v.major == 1) && (v.minor < 8)) {
@@ -444,7 +444,7 @@ int wmain(int argc, wchar_t* argv[], wchar_t *envp[])
 int main(int argc, char* argv[], char *envp[])
 #endif
 {
-	printf("DrawBridge aka Arduino Floppy Disk Reader/Writer V2.8.5, Copyright (C) 2017-2021 Robert Smith\r\n");
+	printf("DrawBridge aka Arduino Floppy Disk Reader/Writer V2.8.6, Copyright (C) 2017-2022 Robert Smith\r\n");
 	printf("Full sourcecode and documentation at https://amiga.robsmithdev.co.uk\r\n");
 	printf("This is free software licenced under the GNU General Public Licence V3\r\n\r\n");
 

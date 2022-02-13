@@ -44,6 +44,14 @@ For further details including how to wire this up please visit
 [https://amiga.robsmithdev.co.uk] or join the discussion on discord at [https://discord.gg/HctVgSFEXu]
 
 # Whats changed?
+* v2.8.6 Better extraction of disk revolutions and a few bugs fixed
+	 Accurate flux extraction available but experimental so you can choose to use it or not (can't handle some long-track disks)
+         Modification of older flux reading method for more better compatability
+	 New firmware *1.9.23* includes basic PLL support for UAE to provide better support for games using Weak/Flaky bits
+         Improved IPF & SCP writing by changing some of the parameters
+         Console application now has an icon and version information
+	 Tidied up some of the assembly language in the Arduino Sketch
+	 Improvements and testing with the help of Dimitris Panokostas aka MiDWaN (Amiberry)
 * v2.8.5 Improved IPF support for non-index aligned images (SCP and IPF writing needs 1.9.21 firmware)
          Added warning if known applications are running that may be using the serial port
 * v2.8.4 Support for forcing Index Alignment of all writes, even in emulators (only for use if you know what you are doing)
