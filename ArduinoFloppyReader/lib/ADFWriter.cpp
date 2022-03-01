@@ -1828,7 +1828,7 @@ ADFResult ADFWriter::DiskToSCP(const std::wstring& outputFile, bool isHDMode, co
 						break;
 				}
 				else {
-					if (m_device.readRotation(*pll.rotationExtractor(), RAW_TRACKDATA_LENGTH_HD, samples, startPatterns, callbackFunction, false) == DiagnosticResponse::drOK)
+					if (m_device.readRotation(*pll.rotationExtractor(), RAW_TRACKDATA_LENGTH_HD, samples, startPatterns, callbackFunction, true) == DiagnosticResponse::drOK)
 						break;
 				}
 			}

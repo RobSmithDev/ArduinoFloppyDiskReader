@@ -193,6 +193,7 @@
     <ResourceCompile Include="DrawBridge.rc" />
   </ItemGroup>
   <ItemGroup>
+    <Image Include="res\ArduinoFloppyReaderConsole.ico" />
     <Image Include="res\ArduinoFloppyReaderWin.ico" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
