@@ -2,9 +2,10 @@
 #define COMTYPE_H
 
 typedef void *PVOID;
-#ifndef _WIN32
 #include <cstddef>
 #include <stdint.h>
+
+#ifndef _WIN32
 typedef uint8_t *PBYTE;
 typedef uint16_t *PWORD;
 typedef uint32_t *PDWORD;
