@@ -3,6 +3,8 @@
 
 typedef void *PVOID;
 #ifndef _WIN32
+#include <cstddef>
+#include <stdint.h>
 typedef uint8_t *PBYTE;
 typedef uint16_t *PWORD;
 typedef uint32_t *PDWORD;
@@ -13,11 +15,11 @@ typedef long IOREG;
 typedef unsigned char UBYTE;
 typedef unsigned short UWORD;
 typedef unsigned long UDWORD;
-typedef unsigned __int64 UQUAD;
+typedef uint64_t UQUAD;
 typedef signed char SBYTE;
 typedef signed short SWORD;
 typedef signed long SDWORD;
-typedef signed __int64 SQUAD;
+typedef int64_t SQUAD;
 
 typedef UBYTE *PUBYTE;
 typedef UWORD *PUWORD;

@@ -50,15 +50,19 @@ protected:
 	CComboBox m_fileformat;
 	CButton m_tracks80;
 	CButton m_tracks82;
+	CButton m_tracks84;
 	CEdit m_filename;
 	CButton m_scpdd;
 	CButton m_scphd;
+	CStatic m_scp2;
+	CButton m_experimental;
 
 	afx_msg void OnBnClickedBrowse();
 	afx_msg void OnBnClickedStartstop();
 	afx_msg void OnCbnSelchangeDiskformat();
 public:
 	enum class ImageType { itADF = 0, itSCP = 1 };
+	enum class NumTracks { nt80, nt82, nt84 };
 	CReadFromDiskPage(std::function<void()> onStart, CWnd* pParent = nullptr);   // standard constructor
 	virtual ~CReadFromDiskPage();
 
@@ -68,9 +72,6 @@ public:
 	// Properties set on this dialog
 	const std::wstring getFilename() const;
 	const ImageType getImageType() const { return static_cast<ImageType>(m_fileformat.GetCurSel()); }
-	const bool is80TrackMode() const { return m_tracks80.GetCheck() != 0; };
-	const bool is82TrackMode() const { return m_tracks82.GetCheck() != 0; };
+	const NumTracks getNumTracks() const { return (m_tracks84.GetCheck() != 0) ? NumTracks::nt84 : ((m_tracks82.GetCheck() != 0) ? NumTracks::nt82 : NumTracks::nt80 ); };
 	const bool isExperimentalMode() const { return m_experimental.GetCheck() != 0; };
-	CStatic m_scp2;
-	CButton m_experimental;
 };

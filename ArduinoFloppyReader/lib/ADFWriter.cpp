@@ -57,6 +57,7 @@ const long long StreamMax = std::numeric_limits<std::streamsize>::max();
 #include <Windows.h>
 #pragma comment(lib,"Ws2_32.lib")
 #else
+#include <algorithm>
 #include <netdb.h>
 #endif 
 
@@ -66,6 +67,8 @@ const long long StreamMax = std::numeric_limits<std::streamsize>::max();
 #include "capsapi/Comtype.h"
 #include "capsapi/CapsAPI.h"
 #include "capsapi/CapsPlug.h"
+
+#include <math.h>
 
 
 using namespace ArduinoFloppyReader;
@@ -345,8 +348,8 @@ bool decodeSector(const RawEncodedSector& rawSector, const unsigned int trackNum
 		return false;  // not valid
 	if (sector.sectorNumber > (isHD ? 21 : 10))
 		return false;
-	if (sector.trackNumber > 162) 
-		return false;   // 81 tracks * 2 for both sides
+	if (sector.trackNumber > 166) 
+		return false;   // 83 tracks * 2 for both sides
 	if (sector.sectorsRemaining > (isHD ? 22 : 11))
 		return false;  // this isnt possible either
 	if (sector.sectorsRemaining < 1)
@@ -686,7 +689,7 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 		if (m_device.testTransferSpeed() != DiagnosticResponse::drOK) {
 			messageOutput(false, "The USB->Serial adapter in use is not suitable.");
 			messageOutput(false, "Arduino UNO: The on-board adapter is not able to sustain large data transfers");
-			messageOutput(false, "Arduino Pro Mini: The USB-Serial board is not able to sustain large data transfers");
+			messageOutput(false, "Arduino Pro mini: The USB-Serial board is not able to sustain large data transfers");
 			messageOutput(false, "Arduino Nano: The USB-Serial on this board is not fast enough to sustain large data transfers");
 			messageOutput(false, "");
 			messageOutput(false, "If you are using any of the devices with a CH340 converter then swap it for an FTDI one.");
@@ -705,7 +708,7 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 		
 			if (m_device.checkIfDiskIsWriteProtected(true) == DiagnosticResponse::drWriteProtected) break;
 
-			if (!askQuestion(false, "Inserted disk is not write protected. If it is, then check Arduino Pin A0. Please insert a write protected AmigaDOS disk in the drive")) {
+			if (!askQuestion(false, "Inserted disk is not write protected. If it is, then check Arduino Pin A1. Please insert a write protected AmigaDOS disk in the drive")) {
 				messageOutput(true, "Diagnostics aborted");
 				return false;
 			}
@@ -1103,7 +1106,7 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 		if (r != DiagnosticResponse::drOK) {
 			messageOutput(true, m_device.getLastErrorStr());
 			free(data);
-			return false;
+			return false; 
 		}
 
 	} while (r == DiagnosticResponse::drWriteProtected);
@@ -1114,7 +1117,7 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
 
 			if (m_device.checkIfDiskIsWriteProtected(true) == DiagnosticResponse::drOK) break;
 
-			if (!askQuestion(false, "Inserted disk is write protected. If it isn't, then check Arduino Pin A0. Please insert a write *enabled* disk in the drive")) {
+			if (!askQuestion(false, "Inserted disk is write protected. If it isn't, then check Arduino Pin A1. Please insert a write *enabled* disk in the drive")) {
 				messageOutput(true, "Diagnostics aborted");
 				free(data);
 				return false;
@@ -1389,7 +1392,7 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring& inputFile, bool mediaIsHD, bo
 	}
 	hADFFile.seekg(0, std::ios_base::beg);
 
-	const int DD_Max_Disk_Size = sizeof(RawDecodedTrackDD) * 82 * 2;  //shouldn't go above 82
+	const int DD_Max_Disk_Size = sizeof(RawDecodedTrackDD) * 84 * 2;  //shouldn't go above 84
 
 	if (mediaIsHD) {
 		if (fileLength <= DD_Max_Disk_Size) {
@@ -1595,7 +1598,7 @@ ADFResult ADFWriter::ADFToDisk(const std::wstring& inputFile, bool mediaIsHD, bo
 			currentTrack++;
 		}
 		// But there is a physical limit
-		if (currentTrack > 81) break; 
+		if (currentTrack > 83) break; 
 	}
 
 	return errors? ADFResult::adfrCompletedWithErrors: ADFResult::adfrComplete;
@@ -1666,7 +1669,7 @@ ADFResult ADFWriter::DiskToSCP(const std::wstring& outputFile, bool isHDMode, co
 	}
 
 	// Higher than this is not supported
-	if (numTracks > 82) return ADFResult::adfrDriveError;
+	if (numTracks > 84) return ADFResult::adfrDriveError;
 	if (revolutions < 1) return ADFResult::adfrDriveError;
 	if (revolutions > 5) return ADFResult::adfrDriveError;
 
@@ -2083,7 +2086,7 @@ ADFResult ADFWriter::DiskToADF(const std::wstring& outputFile, const bool inHDMo
 		if (callback(0, DiskSurface::dsLower, 0, 0, 0, 0, CallbackOperation::coStarting) == WriteResponse::wrAbort) return ADFResult::adfrAborted;
 
 	// Higher than this is not supported
-	if (numTracks>82) return ADFResult::adfrDriveError; 
+	if (numTracks>84) return ADFResult::adfrDriveError; 
 
 	// Attempt ot open the file
 #ifdef _WIN32	
@@ -2300,10 +2303,11 @@ ADFResult ADFWriter::IPFToDisk(const std::wstring& inputFile, bool extraErases, 
 
 	std::vector<IPFData> data;
 	std::vector<DWORD> flux;
+	
+	size_t topRange = fileInfo.maxcylinder;
+	if (topRange > 83) topRange = 83;
 
-	const uint64_t rpmNanoSeconds = (uint64_t)(60000000000.0f / driveRPM);
-
-	for (size_t cyl = fileInfo.mincylinder; cyl <= min(fileInfo.maxcylinder,81); cyl++) {
+	for (size_t cyl = fileInfo.mincylinder; cyl <= topRange; cyl++) {
 
 		// Lets get into the cotrrect position
 		if (m_device.selectTrack((unsigned char)cyl) != DiagnosticResponse::drOK) {

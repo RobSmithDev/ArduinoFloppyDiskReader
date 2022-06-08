@@ -12,7 +12,7 @@
 //
 // Modified for basic cross-platform support
 
-#include "ComType.h"
+#include "Comtype.h"
 #include "CapsAPI.h"
 #include "CapsPlug.h"
 

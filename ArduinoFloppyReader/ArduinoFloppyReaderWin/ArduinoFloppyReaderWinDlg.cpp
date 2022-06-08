@@ -382,7 +382,12 @@ void CArduinoFloppyReaderWinDlg::runThreadRead(CRunningDlg* dlg) {
 	}
 
 	// Analysis was complete and found some data.  Run the reader
-	const unsigned int lastTrack = m_readPage->is82TrackMode() ? 82 : 80;
+	unsigned int lastTrack;
+	switch (m_readPage->getNumTracks()) {
+	case CReadFromDiskPage::NumTracks::nt84: lastTrack = 84; break;
+	case CReadFromDiskPage::NumTracks::nt82: lastTrack = 82; break;
+	default: lastTrack = 80; break;
+	}
 	bool fluxMode = m_readPage->isExperimentalMode();
 	dlg->resetProgress(lastTrack * 2);
 

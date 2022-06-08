@@ -444,7 +444,7 @@ int wmain(int argc, wchar_t* argv[], wchar_t *envp[])
 int main(int argc, char* argv[], char *envp[])
 #endif
 {
-	printf("DrawBridge aka Arduino Floppy Disk Reader/Writer V2.8.7, Copyright (C) 2017-2022 Robert Smith\r\n");
+	printf("DrawBridge aka Arduino Floppy Disk Reader/Writer V2.8.8, Copyright (C) 2017-2022 Robert Smith\r\n");
 	printf("Full sourcecode and documentation at https://amiga.robsmithdev.co.uk\r\n");
 	printf("This is free software licenced under the GNU General Public Licence V3\r\n\r\n");
 

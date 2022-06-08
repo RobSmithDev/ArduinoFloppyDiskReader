@@ -9,7 +9,7 @@
 CC = g++
 
 # define any compile-time flags -m32
-CFLAGS = -Wall -std=c++14 -Wno-psabi -O3
+CFLAGS = -Wall -std=c++14 -Wno-psabi -O3 -pthread
 
 # define any directories containing header files other than /usr/include
 #
@@ -26,7 +26,7 @@ LFLAGS = -L../lib
 LIBS = -ldl
 
 # define the C source files
-SRCS = Main.cpp ../lib/ftdi.cpp ../lib/SerialIO.cpp ../lib/RotationExtractor.cpp ../lib/pll.cpp ../lib/ArduinoInterface.cpp ../lib/ADFWriter.cpp 
+SRCS = Main.cpp ../lib/ftdi.cpp ../lib/SerialIO.cpp ../lib/RotationExtractor.cpp ../lib/pll.cpp ../lib/ArduinoInterface.cpp ../lib/ADFWriter.cpp ../lib/capsapi/CapsPlug.cpp
 
 # define the C object files 
 #

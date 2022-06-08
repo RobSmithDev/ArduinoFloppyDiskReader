@@ -31,7 +31,7 @@
 // were taken from the excellent documentation by Laurent Clévy at http://lclevy.free.fr/adflib/adf_info.html
 // Also credits to Keith Monahan https://www.techtravels.org/tag/mfm/ regarding a bug in the MFM sector start data
 //
-// V2.7
+// V2.8
 
 #pragma once
 #include <functional>
@@ -130,7 +130,4 @@ namespace ArduinoFloppyReader {
 		// Attempt to work out what the density of the currently inserted disk is
 		ADFResult GuessDiskDensity(bool& isHD);
 	};
-
-
-
 };

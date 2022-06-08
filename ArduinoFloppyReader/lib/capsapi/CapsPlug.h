@@ -1,18 +1,20 @@
 #ifndef CAPSPLUG_H
 #define CAPSPLUG_H
 
+
 // library function pointers
 struct CapsProc {
-	char* name;
-#ifndef _WIN32
-	FARPROC proc;
-#else
+	const char* name;
 	void* proc;
-#endif
 };
 
+#ifdef _WIN32
 typedef SDWORD (__cdecl *CAPSHOOKN)(...);
 typedef PCHAR  (__cdecl *CAPSHOOKS)(...);
+#else
+typedef SDWORD (*CAPSHOOKN)(...);
+typedef PCHAR  (*CAPSHOOKS)(...);
+#endif
 
 extern "C" {
 

@@ -45,6 +45,7 @@ void CReadFromDiskPage::DoDataExchange(CDataExchange* pDX)
 	DDX_Control(pDX, IDC_DISKFORMAT, m_fileformat);
 	DDX_Control(pDX, IDC_TRK80, m_tracks80);
 	DDX_Control(pDX, IDC_TRK82, m_tracks82);
+	DDX_Control(pDX, IDC_TRK83, m_tracks84);
 	DDX_Control(pDX, IDC_FILENAME, m_filename);
 	DDX_Control(pDX, IDC_SCPDD, m_scpdd);
 	DDX_Control(pDX, IDC_SCPHD, m_scphd);
@@ -78,8 +79,9 @@ BOOL CReadFromDiskPage::OnInitDialog() {
 	len = 10;
 	RegQueryValueW(HKEY_CURRENT_USER, L"Software\\ArduinoFloppyReader\\tracks", buf, &len);
 	int numTracks = wcstol(buf, nullptr, 10);
+	m_tracks84.SetCheck(numTracks == 84);
 	m_tracks82.SetCheck(numTracks == 82);
-	m_tracks80.SetCheck(numTracks != 82);
+	m_tracks80.SetCheck(numTracks < 82);
 
 	buf[0] = '\0';
 	len = 10;
@@ -98,7 +100,7 @@ void CReadFromDiskPage::saveSettings() {
 	_itoa_s(m_fileformat.GetCurSel(), buffer, 10);
 	RegSetValueA(HKEY_CURRENT_USER, "Software\\ArduinoFloppyReader\\fileFormat", REG_SZ, buffer, strlen(buffer));
 
-	_itoa_s(m_tracks82.GetCheck() ? 82 : 80, buffer, 10);
+	_itoa_s(m_tracks84.GetCheck() ? 84 : (m_tracks82.GetCheck() ? 82 : 80), buffer, 10);
 	RegSetValueA(HKEY_CURRENT_USER, "Software\\ArduinoFloppyReader\\tracks", REG_SZ, buffer, strlen(buffer));
 
 	_itoa_s(m_experimental.GetCheck() ? 1 : 0, buffer, 10);

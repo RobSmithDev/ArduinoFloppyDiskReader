@@ -24,7 +24,7 @@
  *******************************************************************************************************************
  *******************************************************************************************************************/
  
-/* Latest History: Last Modified: 21/02/2022
+/* Latest History: Last Modified: 07/06/2022
     Firmware V1.4: Merged with Pull Request #6 (Modified the behavior of the current track location on Arduino boot - paulofduarte) which also addresses issues with some drives
     Firmware V1.5: Merged with Pull Request #9 (Detect and read out HD floppy disks 1.44M by kollokollo)
     Firmware V1.6: Added experimental unbuffered writing HD disk support
@@ -73,6 +73,7 @@
                       Added basic pll version of read command and updated the old method.  TIMING_OVERHEAD is no longer relevant, this is too slow for DrawBridge Classic
                       Created ASM version for DrawBridge Plus! Classic gets a more accurate version but couldnt get the code stable
               v1.9.24 More Accurate PLL for both DrawBridge Classic and Plus!
+              v1.9.25 Added support for tracks 82 and 83
                       
 */    
 
@@ -630,7 +631,7 @@ bool gotoTrackX(bool reportDiskChange) {
     // Calculate target track and validate 
     int track = ((track1-'0')*10) + (track2-'0');
     if (track<0) return false;
-    if (track>81) return false; // yes amiga could read track 81!
+    if (track>83) return false; // yes amiga could read track 83!
 
     // Exit if its already been reached
     if (track == currentTrack) {

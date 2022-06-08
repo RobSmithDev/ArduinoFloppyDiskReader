@@ -1,5 +1,6 @@
 # DrawBridge aka Arduino Powered Floppy Disk Reader and Writer
-...with 3rd party interfaces for Amiga, ATARI ST and DOS/PC Disk formats 
+...with 3rd party interfaces for Amiga, ATARI ST and DOS/PC Disk formats
+and designed to work with WinUAE and Amiberry!
 
 Created by Robert Smith @RobSmithDev
 https://amiga.robsmithdev.co.uk
@@ -44,14 +45,19 @@ For further details including how to wire this up please visit
 [https://amiga.robsmithdev.co.uk] or join the discussion on discord at [https://discord.gg/HctVgSFEXu]
 
 # Whats changed?
+* v2.8.8 Added support for reading and writing track 82 and 83 (firmware update needed too, not all drives support this anyway)
+         Fixed a mistake in diagnostics suggesting pin A0 was write protect, it's A1!
+         Now hides any CH340 com ports from the list as they're incompatible anyway
+		 Fixed compiling under Linux
+* v2.8.7 Improved support for long track disks and general compatability improvements mainly for UAE! - Make sure you update the firmware
 * v2.8.6 Better extraction of disk revolutions and a few bugs fixed
-	 Accurate flux extraction available but experimental so you can choose to use it or not (can't handle some long-track disks)
+		 Accurate flux extraction available but experimental so you can choose to use it or not (can't handle some long-track disks)
          Modification of older flux reading method for more better compatability
-	 New firmware *1.9.23* includes basic PLL support for UAE to provide better support for games using Weak/Flaky bits
+		 New firmware *1.9.23* includes basic PLL support for UAE to provide better support for games using Weak/Flaky bits
          Improved IPF & SCP writing by changing some of the parameters
          Console application now has an icon and version information
-	 Tidied up some of the assembly language in the Arduino Sketch
-	 Improvements and testing with the help of Dimitris Panokostas aka MiDWaN (Amiberry)
+		 Tidied up some of the assembly language in the Arduino Sketch
+	     Improvements and testing with the help of Dimitris Panokostas aka MiDWaN (Amiberry)
 * v2.8.5 Improved IPF support for non-index aligned images (SCP and IPF writing needs 1.9.21 firmware)
          Added warning if known applications are running that may be using the serial port
 * v2.8.4 Support for forcing Index Alignment of all writes, even in emulators (only for use if you know what you are doing)
