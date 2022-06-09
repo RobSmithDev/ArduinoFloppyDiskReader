@@ -3528,7 +3528,7 @@ void loop() {
                                   (alwaysIndexAlignWrites ? FLAGS_INDEX_ALIGN_MODE : 0)  
                                   );
                   writeByteToUART(0);  // RFU
-                  writeByteToUART(24);  // build number
+                  writeByteToUART(25);  // build number
                   break;
   
         // Command "." means go back to track 0
