@@ -74,6 +74,7 @@
                       Created ASM version for DrawBridge Plus! Classic gets a more accurate version but couldnt get the code stable
               v1.9.24 More Accurate PLL for both DrawBridge Classic and Plus!
               v1.9.25 Added support for tracks 82 and 83
+                      Fixed compiler warnings
                       
 */    
 
@@ -918,25 +919,25 @@ void writePrecompTrack() {
     indexTerminated = true;                                                   \
   }                                                                           \
   timeValue = v;                                                              \
-  if (timeValue == FLUX_SPECIAL_CODE_END) {                                   \ 
-    while (!(TIFR2 &  bit(TOV2))) {};    /* Wait until the pulse finishes */  \ 
-    completedOK = true;                  /* Set success */                    \ 
+  if (timeValue == FLUX_SPECIAL_CODE_END) {                                   \
+    while (!(TIFR2 &  bit(TOV2))) {};    /* Wait until the pulse finishes */  \
+    completedOK = true;                  /* Set success */                    \
     PIN_WRITE_GATE_PORT|=PIN_WRITE_GATE_MASK; /* stop writing */              \
   }                                                                           \
                                                                               \
-  if (timeValue == FLUX_SPECIAL_CODE_BLANK) {                                 \ 
+  if (timeValue == FLUX_SPECIAL_CODE_BLANK) {                                 \
     timeValue = (FLUX_NOFLUX_OFFSET * FLUX_MULTIPLIER) + FLUX_OFFSET;         \
-    osr2b =  0xFF;                                                            \ 
+    osr2b =  0xFF;                                                            \
   } else {                                                                    \
-    timeValue = (timeValue * FLUX_MULTIPLIER) + FLUX_OFFSET;                  \ 
+    timeValue = (timeValue * FLUX_MULTIPLIER) + FLUX_OFFSET;                  \
     osr2b = timeValue - 2;                                                    \
   }                                                                           \
                                                                               \
-  while (!(TIFR2 &  bit(TOV2))) { /* Wait for the previous timer */           \ 
+  while (!(TIFR2 &  bit(TOV2))) { /* Wait for the previous timer */           \
     if (UCSR0A & bit(RXC0)) {     /* Incoming Data */                         \
       SERIAL_BUFFER[serialWritePos++] = UDR0;                                 \
       serialBytesInUse++;                                                     \
-      if (serialBytesInUse>=SERIAL_BUFFER_START) PIN_CTS_PORT|=PIN_CTS_MASK;  \ 
+      if (serialBytesInUse>=SERIAL_BUFFER_START) PIN_CTS_PORT|=PIN_CTS_MASK;  \
     }                                                                         \
   };                                                                          \
   OCR2A = timeValue,                                                          \
@@ -944,11 +945,11 @@ void writePrecompTrack() {
   TIFR2 |= bit(TOV2);
 
 #define prepareFluxFirstTime(v)                                               \
-  if (v == FLUX_SPECIAL_CODE_BLANK) {                                         \ 
+  if (v == FLUX_SPECIAL_CODE_BLANK) {                                         \
     timeValue = (FLUX_NOFLUX_OFFSET * FLUX_MULTIPLIER) + FLUX_OFFSET;         \
-    osr2b = 0xFF;                /* never reached, so no pulse generated */   \ 
+    osr2b = 0xFF;                /* never reached, so no pulse generated */   \
   } else {                                                                    \
-    timeValue = (v * FLUX_MULTIPLIER) + FLUX_OFFSET;                          \ 
+    timeValue = (v * FLUX_MULTIPLIER) + FLUX_OFFSET;                          \
     osr2b = timeValue - 2;                                                    \
   }                                                                           \
   OCR2A = timeValue;                                                          \
@@ -961,7 +962,7 @@ void writePrecompTrack() {
         PIN_CTS_PORT&=~PIN_CTS_MASK;                                              \
         while (!(UCSR0A & bit(RXC0))) {};                                         \
         PIN_CTS_PORT|=PIN_CTS_MASK;                                               \
-        while (UCSR0A & bit(RXC0)) {                                             \
+        while (UCSR0A & bit(RXC0)) {                                              \
           SERIAL_BUFFER[serialWritePos++] = UDR0;                                 \
           serialBytesInUse++;                                                     \
         }                                                                         \
@@ -1562,7 +1563,7 @@ void eraseTrack_HD() {
 }
 
 // Nasty string sending function
-void sendString(char* str) {
+void sendString(const char* str) {
   while (*str!='\0') {
     writeByteToUART(*str);
     str++;
@@ -1830,7 +1831,7 @@ void readTrackDataFast() {
       /* See what MFM 'window' this fits in. Its either a 2uSec, 4uSec or 6uSec,       */   \
       /* or 8+ which isnt technically allowed.   Numbers changed as these are best     */   \
       /* centered around where the bitcels actually are                                */   \
-      if (PCIFR & bit(PCIF2)) {                                                              \       
+      if (PCIFR & bit(PCIF2)) {                                                              \
         PCIFR |= bit(PCIF2);                                                                  \
         if (counter<TIMING_DD_UPPER_4us - HALF_TIMING_OVERHEAD) {                             \
           DataOutputByte|=p4uSec;                                                             \
@@ -1981,9 +1982,7 @@ void readContinuousStream(bool highPrecision) {
         PCMSK0 = 0;
         PCMSK1 = 0;
         PCMSK2 = bit(PCINT20);
-        register char total = 0;
         register unsigned char toTransmit = 0xC3;
-        unsigned char lastCounter = 0;
         TCNT0=0;
 
         if (highPrecision) {
@@ -2070,7 +2069,7 @@ void readContinuousStream(bool highPrecision) {
             "ori r24, 0x80             \n"           /* Write the flag into the output */       \
             "NOTDETECTED_" name ":      \n"          /* End of check */                         \
 
-#define READ_UNROLLED_LOOP_PLL(p4uSec, p6uSec, p8uSec, name)                                                                               \  
+#define READ_UNROLLED_LOOP_PLL(p4uSec, p6uSec, p8uSec, name)                                                                               \
             "mov r27, r21                   \n"    /* Take a copy of the flux value */                                                     \
             "sub r27, r28                   \n"    /* Remove the PLL middle point, so we get a density value */                            \
             "subi r21, 16                   \n"    /* Remove the middle point, so we get a density value */                                \
@@ -2083,7 +2082,7 @@ void readContinuousStream(bool highPrecision) {
                                                                                                                                            \
             "ldi r21, 16                    \n"    /* counter = 16 */                                                                      \
             "ldi r27, 16                    \n"    /* counter = 16 */                                                                      \
-            "rjmp ENDOF_PLLFLUX_" name "    \n"    /* done! */                                                                             \  
+            "rjmp ENDOF_PLLFLUX_" name "    \n"    /* done! */                                                                             \
                                                                                                                                            \
             "SAVEFLUX_LESS8US_" name ":     \n"    /* <6US bit */                                                                          \
             "subi r27, %7                   \n"    /* Subtract */                                                                          \
@@ -2094,7 +2093,7 @@ void readContinuousStream(bool highPrecision) {
             "rjmp ENDOF_PLLFLUX_" name "    \n"    /* goto end */                                                                          \
             "SAFEFLUX_LT_6US_" name ":      \n"    /* less than 2us */                                                                     \
             "ldi r21, 0                     \n"    /* counter=0 */                                                                         \
-            "rjmp ENDOF_PLLFLUX_" name "    \n"    /* done! */                                                                             \  
+            "rjmp ENDOF_PLLFLUX_" name "    \n"    /* done! */                                                                             \
                                                                                                                                            \
             "SAVEFLUX_LESS6US_" name ":     \n"    /* <6US bit */                                                                          \
             "subi r27, %6                   \n"    /* Subtract */                                                                          \
@@ -2105,7 +2104,7 @@ void readContinuousStream(bool highPrecision) {
             "rjmp ENDOF_PLLFLUX_" name "    \n"    /* goto end */                                                                          \
             "SAFEFLUX_LT_4US_" name ":      \n"    /* less than 2us */                                                                     \
             "ldi r21, 0                     \n"    /* counter=0 */                                                                         \
-            "rjmp ENDOF_PLLFLUX_" name "    \n"    /* done! */                                                                             \  
+            "rjmp ENDOF_PLLFLUX_" name "    \n"    /* done! */                                                                             \
                                                                                                                                            \
             "SAVEFLUX_LESS4US_" name ":     \n"    /* <4US bit */                                                                          \
             "cpi r27, %5                    \n"    /* if counter >= TIMING_DD_MIDDLE_2us */                                                \
@@ -2125,7 +2124,7 @@ void readContinuousStream(bool highPrecision) {
                                                                                                                                            \
             "ENDOF_PLLFLUX_" name ":        \n"                                                                                            \
             "cpi r21, 32                    \n"   /* Check density value against 32 */                                                     \
-            "brlo LESSTHAN_32_" name "      \n"   /* Skip if less than 32 */                                                               \ 
+            "brlo LESSTHAN_32_" name "      \n"   /* Skip if less than 32 */                                                               \
             "ldi r21, 31                    \n"   /* limit to 31 max */                                                                    \
             "LESSTHAN_32_" name ":          \n"   /* end */                                                                                \
             "NEXTFLUX_" name ":             \n"                                                                                            \
@@ -2140,7 +2139,7 @@ void readContinuousStream(bool highPrecision) {
             "rjmp PLLFLUX_" name "           \n"   /* Wait for flux to start */                                                            \
                                                                                                                                            \
             /* No flux detected for too long */                                                                                            \
-            "out %3, r17                      \n"   /* TCNT0=0 */                                                                          \ 
+            "out %3, r17                      \n"   /* TCNT0=0 */                                                                          \
             "add r22, r20                     \n"   /* Skip forward 8uS */                                                                 \
             "ldi r21, 16                      \n"  /* counter = 16 */                                                                      \
             "ldi r27, 16                      \n"  /* counter = 16 */                                                                      \
@@ -2148,7 +2147,7 @@ void readContinuousStream(bool highPrecision) {
                                                                                                                                            \
             /* Flux detected */                                                                                                            \
             "SAVEFLUX_" name ":             \n"                                                                                            \
-            "out %3, r17                    \n"    /* TCNT0=0 */                                                                           \ 
+            "out %3, r17                    \n"    /* TCNT0=0 */                                                                           \
             "lds r21, %13                   \n"    /* Copy ICR1L into r21 */                                                               \
             "sub r21, r22                   \n"    /* subtract last counter value (r22) */                                                 \
             "add r22, r21                   \n"    /* advance last counter value */                                                        \
@@ -2163,7 +2162,7 @@ void readContinuousStream(bool highPrecision) {
  *     interrupt triggered.  However, the flag (PCIFT bit PCIF2) will still get set.  So we can monitor for that to know when the interrupt
  *     occured rather than setting a flag
  */
-#define WAIT_FLOR_FLUX_CLASSIC(name)                                                                                                       \  
+#define WAIT_FLOR_FLUX_CLASSIC(name)                                                                                                       \
             "sbi %0, %11                     \n"   /* TIFR2 = OCF2B */                                                                     \
             "PLLFLUX_" name ":               \n"   /* Wait start */                                                                        \
             "sbic %1, %2                     \n"   /* fetch PCIFR & bit(PCIF2) and skip the next line if its clear */                      \
@@ -2196,7 +2195,7 @@ ISR (PCINT2_vect,ISR_NAKED) {         // 4 to start an interrupt, 4 ish to jump 
       "sbi %3, %4         \n"         // TIFR2 = OCF2B (reset the 8us timer incase it happened during the interrupt)
       "ret                \n"         // !!!!! Return from the ISR, but WITHOUT enabling interrupts again, this is a little naughty, I should call reti, but I dont want this interrupt serviced again until im ready
                                        // Originally I disabled the interrupt by doing "sts %1, (value 0), but this way I save 2 clock cycles
-      ::"i" _SFR_IO_ADDR(TCNT0), "m"(PCICR), "m"(TCNT2), "i"_SFR_IO_ADDR(TIFR2), "i" (OCF2B) :);       
+      ::"i" _SFR_IO_ADDR(TCNT0), "m"(PCICR), "m"(TCNT2), "i" _SFR_IO_ADDR(TIFR2), "i" (OCF2B) :);       
 }
 
 
@@ -2239,7 +2238,6 @@ void readContinuousStreamPLL_ASM_CLASSIC() {
     
     OCR2B = TIMING_DD_MIDDLE_8us + 7;
 
-    unsigned char lastCounter = 0;
     EIFR |=bit(INTF0);     
 
     __asm__ volatile(
@@ -2325,9 +2323,9 @@ void readContinuousStreamPLL_ASM_CLASSIC() {
         "pop r19                 \n"            // Store r19
         "pop r18                 \n"            // Store r18
         "pop r17                 \n"            // Store r17
-      :: /*0*/ "i"_SFR_IO_ADDR(TIFR2), /*1*/ "i"_SFR_IO_ADDR(PCIFR), /*2*/ "i"(PCIF2), /*3*/ "i"_SFR_IO_ADDR(TCNT0), /*4*/ "m"(UDR0),  
+      :: /*0*/ "i" _SFR_IO_ADDR(TIFR2), /*1*/ "i" _SFR_IO_ADDR(PCIFR), /*2*/ "i"(PCIF2), /*3*/ "i" _SFR_IO_ADDR(TCNT0), /*4*/ "m"(UDR0),  
     /*5*/ "i"(TIMING_DD_MIDDLE_2us), /*6*/ "i"(TIMING_DD_MIDDLE_4us), /*7*/ "i"(TIMING_DD_MIDDLE_6us), /*8*/ "i"(TIMING_DD_MIDDLE_8us), 
-    /*9*/ "i"(RXC0), /*10*/ "m" (UCSR0A), /*11*/ "i" (OCF2B), /*12*/ "i"_SFR_IO_ADDR(PIN_READ_DATA_PORT), /*13*/ "i"(PIN_READ_DATA), /*14*/"i" _SFR_IO_ADDR(EIFR), /*15*/"i" (INTF0),
+    /*9*/ "i"(RXC0), /*10*/ "m" (UCSR0A), /*11*/ "i" (OCF2B), /*12*/ "i" _SFR_IO_ADDR(PIN_READ_DATA_PORT), /*13*/ "i"(PIN_READ_DATA), /*14*/"i" _SFR_IO_ADDR(EIFR), /*15*/"i" (INTF0),
     /*16*/ "m"(TCNT2));
  
     TCCR0B = 0;      // No Clock (turn off)    
@@ -2466,7 +2464,7 @@ void readContinuousStreamPLL_ASM_PLUS() {
         "pop r21                 \n"            // Store r21
         "pop r20                 \n"            // Store r20
         "pop r17                 \n"            // Store r17
-      :: /*0*/ "i"_SFR_IO_ADDR(TIFR0), /*1*/ "i" _SFR_IO_ADDR(TIFR1), /*2*/ "i" (ICF1), /*3*/ "i"_SFR_IO_ADDR(TCNT0), /*4*/ "i"(TIMING_DD_MIDDLE_8us),  
+      :: /*0*/ "i" _SFR_IO_ADDR(TIFR0), /*1*/ "i" _SFR_IO_ADDR(TIFR1), /*2*/ "i" (ICF1), /*3*/ "i" _SFR_IO_ADDR(TCNT0), /*4*/ "i"(TIMING_DD_MIDDLE_8us),  
     /*5*/ "i"(TIMING_DD_MIDDLE_2us), /*6*/ "i"(TIMING_DD_MIDDLE_4us), /*7*/ "i"(TIMING_DD_MIDDLE_6us), /*8*/ "i"(TIMING_DD_MIDDLE_8us), 
     /*9*/ "i"(RXC0), /*10*/ "m" (UCSR0A), /*11*/ "m" (UDR0), /*12*/ "i"(OCF0B), /*13*/ "m"(ICR1L), /*14*/"i" _SFR_IO_ADDR(EIFR), /*15*/"i" (INTF0), /* 16 */ "m"(TCNT1L));
         
@@ -2525,7 +2523,7 @@ void readContinuousStreamPLL_ASM() {
 
 
 // We optimise this for the exact value of 31 we're storing here
-#define ENCODE_FLUXREPEAT_ASM(id, loopName, finishedName)                                         \      
+#define ENCODE_FLUXREPEAT_ASM(id, loopName, finishedName)                                         \
         "cpi r23, 1                           \n"  /* check the mode */                           \
         "brlo MODE_0_FIXED_" id "             \n"  /* mode=0 */                                   \
         "breq MODE_1_FIXED_" id "             \n"  /* mode=1 */                                   \
@@ -2536,7 +2534,7 @@ void readContinuousStreamPLL_ASM() {
         "sbi %0, %1                           \n"  /* Reset the register  */                      \
         "ori r25, 0x80                        \n"  /* MSB means "index detected"  */              \
         "SKIP_INDEX_FIXED_" id ":             \n"  /* skipping index marker  */                   \
-        "ldi r23, 0                           \n"  /* set mode=0 */                               \        
+        "ldi r23, 0                           \n"  /* set mode=0 */                               \
         "WAIT_UART3_" id ":                    \n" /* retry point */                              \
         "lds r26, %4                           \n" /* r26 = UCSR0A */                             \
         "sbrs r26, %11                         \n" /* See If UDRE0 is set in UCSR0A */            \
@@ -2578,7 +2576,7 @@ void readContinuousStreamPLL_ASM() {
         "WAIT_UART1_" id ":                    \n" /* retry point */                              \
         "lds r26, %4                           \n" /* r26 = UCSR0A */                             \
         "sbrs r26, %11                         \n"  /* See If UDRE0 is set in UCSR0A */           \
-        "rjmp WAIT_UART1_" id "                \n"                                                \        
+        "rjmp WAIT_UART1_" id "                \n"                                                \
         "sts %3, r25                          \n"  /* UDR0=OutputByte2 */                         \
         "rjmp " loopName "                    \n"                                                 \
         /* Mode 0 */                                                                              \
@@ -2601,7 +2599,7 @@ void readContinuousStreamPLL_ASM() {
         "sbrs r26, %11                         \n"  /* See If UDRE0 is set in UCSR0A */           \
         "rjmp WAIT_UART2_" id "                \n"                                                \
         "sts %3, r24                           \n"  /* UDR0=OutputByte1 */                        \
-        "mov r25, r20                          \n"  /* OutputByte2=amount */                      \ 
+        "mov r25, r20                          \n"  /* OutputByte2=amount */                      \
         "andi r25, 0x18                        \n" /* AND with B00011000 */                       \
         "lsl r25                               \n"  /* << 1 */                                    \
         "lsl r25                               \n"  /* << 1 */                                    \
@@ -2714,7 +2712,7 @@ void fluxStreamer() {
             "pop r22                          \n"
             "pop r21                          \n"
             "pop r20                          \n"
-          ::"i"_SFR_IO_ADDR(EIFR), "i"(INTF0), "i"(MAX_FLUX_REPEAT), "m"(UDR0) , "m"(UCSR0A), "i"(RXC0), "m"(TCNT1L), "i"(FLUX_REPEAT_OFFSET), \
+          ::"i" _SFR_IO_ADDR(EIFR), "i"(INTF0), "i"(MAX_FLUX_REPEAT), "m"(UDR0) , "m"(UCSR0A), "i"(RXC0), "m"(TCNT1L), "i"(FLUX_REPEAT_OFFSET), \
               "i"(MAX_FLUX_SIGNAL), "i"(MAX_FLUX_SIGNAL-1), "i"(MIN_FLUX_ALLOWED), "i"(UDRE0), "m"(ICR1L)); 
 
         TIMSK1 = 0;
@@ -2789,9 +2787,9 @@ void fluxStreamer() {
             "pop r22                          \n"
             "pop r21                          \n"
             "pop r20                          \n"
-          ::"i"_SFR_IO_ADDR(EIFR),"i"(INTF0), "i"(MAX_FLUX_REPEAT), "m"(UDR0) , "m"(UCSR0A), "i"(RXC0),"i" _SFR_IO_ADDR(TCNT0), "i"(FLUX_REPEAT_OFFSET), \
+          ::"i" _SFR_IO_ADDR(EIFR),"i"(INTF0), "i"(MAX_FLUX_REPEAT), "m"(UDR0) , "m"(UCSR0A), "i"(RXC0),"i" _SFR_IO_ADDR(TCNT0), "i"(FLUX_REPEAT_OFFSET), \
               "i"(MAX_FLUX_SIGNAL), "i"(MAX_FLUX_SIGNAL-1), "i"(MIN_FLUX_ALLOWED), "i"(UDRE0),
-             /*12*/ "i"_SFR_IO_ADDR(PIN_READ_DATA_PORT), /*13*/ "i"(PIN_READ_DATA), /*14*/ "i"_SFR_IO_ADDR(PCIFR), /*15*/ "i"(PCIF2));
+             /*12*/ "i" _SFR_IO_ADDR(PIN_READ_DATA_PORT), /*13*/ "i"(PIN_READ_DATA), /*14*/ "i" _SFR_IO_ADDR(PCIFR), /*15*/ "i"(PCIF2));
         
         TCCR0B = 0;      // No Clock (turn off)    
         PCMSK2 = 0;
@@ -2846,7 +2844,7 @@ void fluxStreamer() {
 // This is a nasty way to unroll the FOR loop.  This has an error of upto 3 clock ticks. For DD this isn't a problem, for HD it can be. Which is why Drawbridge Plus exists
 #define READ_UNROLLED_LOOP_HD_BITMODE()                                                     \
             while (!(PCIFR & bit(PCIF2))) {};                                               \
-            counter = TCNT0,TCNT0 = TIMING_OVERHEAD + DB_CLASSIC_HD_MIDDLE;                \
+            counter = TCNT0,TCNT0 = TIMING_OVERHEAD + DB_CLASSIC_HD_MIDDLE;                 \
             while (!(PIN_READ_DATA_PORT & PIN_READ_DATA_MASK)) {};                          \
             PCIFR |= bit(PCIF2);                                                            \
             counter /= 16;                                                                  \
@@ -2856,55 +2854,55 @@ void fluxStreamer() {
                 DataOutputByte |= 3;                                                        \
               }                                                                             \
             } else                                                                          \
-            if (counter == 2) DataOutputByte |= 1; else DataOutputByte |= 2;                \ 
+            if (counter == 2) DataOutputByte |= 1; else DataOutputByte |= 2;                \
             asm("wdr");               /* reset watchdog timer */                            \
             WDTCSR |= bit(WDIE);      /* Reset its flags */                                 \
 
 
-#define READ_UNROLLED_LOOP_HD_ASM_BITMODE(id)                                                                                                     \
+#define READ_UNROLLED_LOOP_HD_ASM_BITMODE(id)                                                                                                   \
             asm("sbis 0x1b, 2                    \n"   /* fetch PCIFR & bit(PCIF2) and skip the next line if its set */                         \
                 "rjmp .-4                        \n"   /* go back and try again */                                                              \
                 "in  r20, 0x26                   \n"   /* 1 Tick,   Read Timer0 value */                                                        \
                 "out 0x26, r22                   \n"   /* 1 Tick,   Reset Timer0 value */                                                       \
-                                                                                                                                                  \
+                                                                                                                                                \
                 "sbis  0x09, 4                   \n"   /* Check the READ DATA pin */                                                            \
                 "rjmp  .-4                       \n"   /* Jump back if its still within a pulse */                                              \
                 "sbi 0x1b, 2                     \n"   /* Reset the flag that started all of this */                                            \
-                                                                                                                                                  \
+                                                                                                                                                \
                 "swap r20                        \n"   /* 1 Tick, swap the nybbles */                                                           \
                 "andi r20, 15                    \n"   /* keep the last 4 bits */                                                               \
                 "cpi r20, 2                      \n"   /* compare with 2 */                                                                     \
                 "brlo handle2us_" id "           \n"   /* If less than 2, then branch to the 2us handler */                                     \
-                                                                                                                                                  \
+                                                                                                                                                \
                 "breq handle3us_" id "           \n"   /* If equal to 2, branch to the 3us handler */                                           \
                 "ori r24, 2                      \n"   /* Store the code for 4us */                                                             \
                 "rjmp endcode_" id "             \n"   /* goto the end */                                                                       \
-                                                                                                                                                  \
-                "handle3us_" id ":               \n"   /* 3us Handler */                                                                        \                                                                                                                                                  
+                                                                                                                                                \
+                "handle3us_" id ":               \n"   /* 3us Handler */                                                                        \
                 "ori r24, 1                      \n"   /* Store the code for 3us */                                                             \
                 "rjmp endcode_" id "             \n"   /* goto the end */                                                                       \
-                                                                                                                                                  \
+                                                                                                                                                \
                 "handle2us_" id ":               \n"   /* 2us Handler */                                                                        \
                 "sbis  0x1c, 0                   \n"   /* 1/3 if (!(EIFR&bit(INTF0))) */                                                        \
                 "rjmp endcode_" id "             \n"   /* Goto the end if the INDEX pulse is not detected */                                    \
                 "sbi 0x1c, 0                     \n"   /* 2 Reset the register */                                                               \
                 "ori r24, 3                      \n"   /* Save the special code code for what we discovered */                                  \
-                                                                                                                                                  \
+                                                                                                                                                \
                 "endcode_" id ":                 \n"   /* the end */                                                                            \
-                "wdr                             \n"   /* Reset the watchdog timer */                                                           \  
-                "lds  r20, 0x0060                \n"   /* read WDTCSR  */                                                                       \              
-                "ori  r20, 0x40                  \n"   /* bit(WDIE)  */                                                                         \              
-                "sts  0x0060, r20                \n"   /* write WDTCSR  */                                                                      \    
+                "wdr                             \n"   /* Reset the watchdog timer */                                                           \
+                "lds  r20, 0x0060                \n"   /* read WDTCSR  */                                                                       \
+                "ori  r20, 0x40                  \n"   /* bit(WDIE)  */                                                                         \
+                "sts  0x0060, r20                \n"   /* write WDTCSR  */                                                                      \
               );
 
 
 // This is a nasty way to unroll the FOR loop.  
-#define READ_UNROLLED_LOOP_HD_BITMODE_DRAWBRIDGE_PLUS()                                    \
+#define READ_UNROLLED_LOOP_HD_BITMODE_DRAWBRIDGE_PLUS()                                     \
             while ((!(TIFR1 & bit(ICF1)))&&(!(TIFR0 & bit(OCF0B)))) {}                      \
             tmp = ICR1L; counter = tmp - lastCounter, lastCounter = tmp;                    \
             TIFR1 |= bit(ICF1);                                                             \
-            counter += pllValue;                                                            \  
-            total += 7-(counter & 0x0F);                                                    \          
+            counter += pllValue;                                                            \
+            total += 7-(counter & 0x0F);                                                    \
             counter = (counter / 16) & 15;                                                  \
             if (counter < 2) {                                                              \
               if ((EIFR&bit(INTF0))) {                                                      \
@@ -2918,49 +2916,49 @@ void fluxStreamer() {
             TIFR0 |= bit(OCF0B);                                                            \
 
 
-#define READ_UNROLLED_LOOP_HD_ASM_BITMODE_DRAWBRIDGE_PLUS(id)                                                                                     \
+#define READ_UNROLLED_LOOP_HD_ASM_BITMODE_DRAWBRIDGE_PLUS(id)                                                                                   \
             asm("sbic  %0, %1                     \n"   /* fetch TIFR1 & bit(ICF1) and skip the next line if its clear */                       \
                 "rjmp  capturedata_" id "         \n"   /* skip other test */                                                                   \
                 "sbis  %2, %3                     \n"   /* fetch (TIFR0 & bit(OCF0B) and skip the next line if its set */                       \
                 "rjmp  .-8                        \n"   /* start checking again */                                                              \
-                                                                                                                                                  \
+                                                                                                                                                \
                 "capturedata_" id ":              \n"   /* start of capture code */                                                             \
-                                                                                                                                                  \
-                "lds r21, %4                      \n"   /* Copy ICR1L into r21 (0x0086) */                                                      \ 
+                                                                                                                                                \
+                "lds r21, %4                      \n"   /* Copy ICR1L into r21 (0x0086) */                                                      \
                 "mov r20, r21                     \n"   /* take a copy of this value */                                                         \
                 "sub r20, r25                     \n"   /* subtract previous timer value */                                                     \
                 "mov r25, r21                     \n"   /* store new timer value */                                                             \
-                                                                                                                                                  \                
+                                                                                                                                                \
                 "sbi %0, %1                       \n"   /* Clear capture flag TIFR1 |= bit(ICF1); */                                            \
-                                                                                                                                                  \                
-                /* At this point, r20=time difference since last bit-cell, r25 is the time of this bit-cell (and 21 is a copy) */                 \
-                                                                                                                                                  \
+                                                                                                                                                \
+                /* At this point, r20=time difference since last bit-cell, r25 is the time of this bit-cell (and 21 is a copy) */               \
+                                                                                                                                                \
                 "add r20, r22                    \n"   /* -8 (by default) */                                                                    \
-                                                                                                                                                  \
+                                                                                                                                                \
                 "mov r21, r20                    \n"   /* Take a copy of the value that has the +/- pll */                                      \
                 "andi r21, 0x0F                  \n"   /* the lower nybble.  This is the offset within the 16 ticks */                          \
                 "subi r28, -7                    \n"   /* Add 7 to r28 (total) */                                                               \
                 "sub r28, r21                    \n"   /* Subtract from r28, r21 the offset */                                                  \
-                                                                                                                                                  \
+                                                                                                                                                \
                 "swap r20                        \n"   /* 1 Tick,   swap the nybbles */                                                         \
                 "andi r20, 15                    \n"   /* keep the last 4 bits */                                                               \
                 "cpi r20, 2                      \n"   /* compare with 2 */                                                                     \
                 "brlo handle2us_" id "           \n"   /* If less than 2, then bramch to the 2us handler */                                     \
-                                                                                                                                                  \
+                                                                                                                                                \
                 "breq handle3us_" id "           \n"   /* If equal to 2, branch to the 3us handler */                                           \
                 "ori r24, 2                      \n"   /* Store the code for 4us */                                                             \
                 "rjmp endcode_" id "             \n"   /* goto the end */                                                                       \
-                                                                                                                                                  \
-                "handle3us_" id ":               \n"   /* 3us Handler */                                                                        \                                                                                                                                                  
+                                                                                                                                                \
+                "handle3us_" id ":               \n"   /* 3us Handler */                                                                        \
                 "ori r24, 1                      \n"   /* Store the code for 3us */                                                             \
-                "rjmp endcode_" id "             \n"   /* goto the end */                                                                       \                
-                                                                                                                                                  \
+                "rjmp endcode_" id "             \n"   /* goto the end */                                                                       \
+                                                                                                                                                \
                 "handle2us_" id ":               \n"   /* 2us Handler */                                                                        \
                 "sbis  %5, %6                    \n"   /* 1/3 if (!(EIFR&bit(INTF0))) 0x1c */                                                   \
                 "rjmp endcode_" id "             \n"   /* Goto the end if the INDEX pulse is not detected */                                    \
                 "sbi %5, %6                      \n"   /* 2 Reset the register */                                                               \
                 "ori r24, 3                      \n"   /* Save the special code code for what we discovered */                                  \
-                                                                                                                                                  \
+                                                                                                                                                \
                 "endcode_" id ":                 \n"   /* the end */                                                                            \
                 "sbi %2, %3                      \n"   /* Reset overflow flag */                                                                \
                 "out %7, r26                     \n"   /* 1 Tick,   Reset Timer0 value */                                                       \
@@ -2976,7 +2974,7 @@ ISR(WDT_vect, ISR_NAKED) {
          "cbi %0, %2            \n"       // INPUT Mode
          "sbi %1, %2            \n"       // Pullup
          "reti                  \n"       // And return
-         :: "i"_SFR_IO_ADDR(PIN_READ_DATA_IO_DIR), "i"_SFR_IO_ADDR(PIN_READ_DATA_PORT_WRITE), "i"(PIN_READ_DATA): );  // PIN_READ_DATA isnt strictly correct
+         :: "i" _SFR_IO_ADDR(PIN_READ_DATA_IO_DIR), "i" _SFR_IO_ADDR(PIN_READ_DATA_PORT_WRITE), "i"(PIN_READ_DATA): );  // PIN_READ_DATA isnt strictly correct
 }
    
 #else
@@ -3369,7 +3367,6 @@ void testDiskDensity() {
     PCMSK2 = bit(PCINT20);
 
     unsigned int overflows = 0;
-    unsigned char lastTCNT2;
 
     unsigned int HDPulses = 0;
     unsigned int DDPulses = 0;
