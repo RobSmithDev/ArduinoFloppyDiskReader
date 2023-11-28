@@ -650,9 +650,7 @@ SerialIO::Response SerialIO::configurePort(const Configuration& configuration) {
 
 	// Now try to set the baud rate
 	int baud = configuration.baudRate;
-#ifdef __APPLE__
-	if (ioctl(m_portHandle, IOSSIOSPEED, &baud) == -1) return Response::rUnknownError;
-#else
+#ifndef __APPLE__
 	if (baud == 9600) {
 		term.c_cflag &= ~CBAUD;
 		term.c_cflag |= B9600;
@@ -678,6 +676,10 @@ SerialIO::Response SerialIO::configurePort(const Configuration& configuration) {
 	ioctl(m_portHandle, TIOCGSERIAL, &serial);
 	serial.flags |= ASYNC_LOW_LATENCY;
 	ioctl(m_portHandle, TIOCSSERIAL, &serial);
+#endif
+
+#ifdef __APPLE__
+	if (ioctl(m_portHandle, IOSSIOSPEED, &baud) == -1) return Response::rUnknownError;
 #endif
 
 	setDTR(true);
