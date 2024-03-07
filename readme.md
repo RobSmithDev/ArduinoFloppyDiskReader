@@ -129,5 +129,6 @@ has ported the code.
 
 
 # Licence
-This entire project is available under the GNU General Public License v3
-licence.  See licence.txt for more details.
+This entire project is available multi-licensed under the terms of the Mozilla Public License Version 2.0
+as published by Mozilla Corporation and the GNU General Public License, version 2 or later, as published by the Free
+Software Foundation
