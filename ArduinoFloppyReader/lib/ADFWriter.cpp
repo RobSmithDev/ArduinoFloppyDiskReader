@@ -1,20 +1,16 @@
-/* ArduinoFloppyReader (and writer)
+/* DrawBridge - aka ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017-2022 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2023 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
-* This library is free software; you can redistribute it and/or
-* modify it under the terms of the GNU Library General Public
-* License as published by the Free Software Foundation; either
-* version 3 of the License, or (at your option) any later version.
+* This file is multi-licensed under the terms of the Mozilla Public
+* License Version 2.0 as published by Mozilla Corporation and the
+* GNU General Public License, version 2 or later, as published by the
+* Free Software Foundation.
 *
-* This library is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-* Library General Public License for more details.
+* MPL2: https://www.mozilla.org/en-US/MPL/2.0/
+* GPL2: https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html
 *
-* You should have received a copy of the GNU Library General Public
-* License along with this library; if not, see http://www.gnu.org/licenses/
 */
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -74,28 +70,12 @@ const long long StreamMax = std::numeric_limits<std::streamsize>::max();
 using namespace ArduinoFloppyReader;
 
 #ifndef OUTPUT_TIME_IN_NS
-WARNING: OUTPUT_TIME_IN_NS MUST BE DEFINED IN REVOLUTIONEXTRACTOR.H FOR THIS CLASS TO WORK CORRECTLY
+WARNING: OUTPUT_TIME_IN_NS MUST BE DEFINED IN RotationExtractor.H FOR THIS CLASS TO WORK CORRECTLY
 #endif
-
-
-#define MFM_MASK    0x55555555L		
-#define AMIGA_WORD_SYNC  0x4489							 // Disk SYNC code for the Amiga start of sector
-#define SECTOR_BYTES	512								 // Number of bytes in a decoded sector
-#define NUM_SECTORS_PER_TRACK_DD 11						 // Number of sectors per track
-#define NUM_SECTORS_PER_TRACK_HD 22						  // Same but for HD disks
-#define RAW_SECTOR_SIZE (8+56+SECTOR_BYTES+SECTOR_BYTES)      // Size of a sector, *Including* the sector sync word longs
-#define ADF_TRACK_SIZE_DD (SECTOR_BYTES*NUM_SECTORS_PER_TRACK_DD)   // Bytes required for a single track dd
-#define ADF_TRACK_SIZE_HD (SECTOR_BYTES*NUM_SECTORS_PER_TRACK_HD)   // Bytes required for a single track hd
-
 
 const char* TEST_BYTE_SEQUENCE = "amiga.robsmithdev.co.uk";
 
-// Buffer to hold raw data for just a single sector
-typedef unsigned char RawEncodedSector[RAW_SECTOR_SIZE];
-typedef unsigned char RawDecodedSector[SECTOR_BYTES];
-typedef RawDecodedSector RawDecodedTrackDD[NUM_SECTORS_PER_TRACK_DD];
-typedef RawDecodedSector RawDecodedTrackHD[NUM_SECTORS_PER_TRACK_HD];
-typedef unsigned char RawMFMData[SECTOR_BYTES + SECTOR_BYTES];
+
 
 // When workbench formats a disk, it write 13630 bytes of mfm data to the disk.  So we're going to write this amount, and then we dont need an erase first
 typedef struct alignas(1) {
@@ -301,7 +281,8 @@ bool attemptFixSector(const DecodedTrack& decodedTrack, DecodedSector& outputSec
 		int ones = 0;
 	} SectorCounter[8];
 
-	SectorCounter sectorSum[SECTOR_BYTES + SECTOR_BYTES];
+	SectorCounter* sectorSum = new SectorCounter[SECTOR_BYTES + SECTOR_BYTES];
+	if (!sectorSum) return false;
 
 	memset(sectorSum, 0, sizeof(sectorSum));
 
@@ -318,6 +299,8 @@ bool attemptFixSector(const DecodedTrack& decodedTrack, DecodedSector& outputSec
 		for (int bit = 0; bit <= 7; bit++)
 			if (sectorSum[byteNumber][bit].ones >= sectorSum[byteNumber][bit].zeros)
 				outputSector.rawSector[byteNumber] |= (1 << bit);
+
+	delete[] sectorSum;
 
 	return true;
 }
@@ -2522,7 +2505,7 @@ ADFResult ADFWriter::IPFToDisk(const std::wstring& inputFile, bool extraErases, 
 			}
 			// Reset to 01010101 etc
 			m_device.eraseCurrentTrack();
-			DiagnosticResponse r = m_device.writeFlux(flux, (DWORD)fluxTimeAtOverlap, driveRPM, false, terminateAtIndex);
+			DiagnosticResponse r = m_device.writeFlux(flux, (DWORD)fluxTimeAtOverlap, driveRPM, totalTime>220800000, terminateAtIndex);
 			if ((r == DiagnosticResponse::drFramingError) || (r == DiagnosticResponse::drSerialOverrun)) {
 				// Retry
 				m_device.eraseFluxOnTrack();

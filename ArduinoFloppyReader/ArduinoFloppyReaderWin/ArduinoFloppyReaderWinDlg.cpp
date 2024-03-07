@@ -1,20 +1,16 @@
-/* ArduinoFloppyReaderWin aka DrawBridge Windows App
+/* DrawBridge - aka ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017-2022 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2024 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
-* This program is free software; you can redistribute it and/or
-* modify it under the terms of the GNU Library General Public
-* License as published by the Free Software Foundation; either
-* version 3 of the License, or (at your option) any later version.
+* This file is multi-licensed under the terms of the Mozilla Public
+* License Version 2.0 as published by Mozilla Corporation and the
+* GNU General Public License, version 2 or later, as published by the
+* Free Software Foundation.
 *
-* This library is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-* Library General Public License for more details.
+* MPL2: https://www.mozilla.org/en-US/MPL/2.0/
+* GPL2: https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html
 *
-* You should have received a copy of the GNU Library General Public
-* License along with this program; if not see http://www.gnu.org/licenses/
 */
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -41,6 +37,8 @@
 #define EVENT_ID_RESCAN			((UINT_PTR)100)
 #define EVENT_ID_BLINK			((UINT_PTR)101)
 #define EVENT_RESCAN_INTERVAL	100
+
+
 
 static const WCHAR* footerStringNormal = L"DrawBridge %i.%i.%i, Created by Robert Smith (RobSmithDev) https://amiga.robsmithdev.co.uk";
 static const WCHAR* footerStringUpdate = L"DrawBridge %i.%i.%i, Update Available (V%i.%i.%i) at https://amiga.robsmithdev.co.uk";
@@ -173,8 +171,10 @@ BOOL CArduinoFloppyReaderWinDlg::OnInitDialog()
 	setComPort(buf);
 
 	m_mediadensity.AddString(L"Auto");
-	m_mediadensity.AddString(L"DD");
+	m_mediadensity.AddString(L"DD (MUST Cover Hole for HD Disks)");
 	m_mediadensity.AddString(L"HD");
+	int w = SendDlgItemMessageW(IDC_MEDIADENSITY, CB_GETDROPPEDWIDTH, 0, 0);
+	SendDlgItemMessageW(IDC_MEDIADENSITY, CB_SETDROPPEDWIDTH, w + 140, 0);
 	buf[0] = '\0';
 	len = 10;
 	RegQueryValueW(HKEY_CURRENT_USER, L"Software\\ArduinoFloppyReader\\disksize", buf, &len);
@@ -189,6 +189,7 @@ BOOL CArduinoFloppyReaderWinDlg::OnInitDialog()
 	m_pages[0]->ShowWindow(index == 0 ? TRUE : FALSE);
 	m_pages[1]->ShowWindow(index == 1 ? TRUE : FALSE);
 
+#ifdef COMPLETE_SOUNDEFFECT
 	HRSRC res = FindResource(NULL, MAKEINTRESOURCE(IDR_COMPLETE), L"WAVE");
 	m_sfx = nullptr;
 	if (res) {
@@ -205,7 +206,7 @@ BOOL CArduinoFloppyReaderWinDlg::OnInitDialog()
 			FreeResource(resource);
 		}
 	}
-
+#endif
 	DWORD dwStyle = GetWindowLong(m_footer.GetSafeHwnd(), GWL_STYLE);
 	SetWindowLong(m_footer.GetSafeHwnd(), GWL_STYLE, dwStyle | SS_NOTIFY);
 
@@ -264,7 +265,9 @@ void CArduinoFloppyReaderWinDlg::setComPort(const std::wstring& comport) {
 
 // Free
 CArduinoFloppyReaderWinDlg::~CArduinoFloppyReaderWinDlg() {
+#ifdef COMPLETE_SOUNDEFFECT
 	if (m_sfx) free(m_sfx);
+#endif
 }
 
 // On Sys command
@@ -450,10 +453,16 @@ void CArduinoFloppyReaderWinDlg::runThreadRead(CRunningDlg* dlg) {
 	std::string lastError = writer.getLastError();
 	writer.closeDevice();
 
+#ifdef COMPLETE_SOUNDEFFECT
+	void* sfx = m_sfx;
+#else
+	void* sfx = nullptr;
+#endif
+
 	// Handle the result
 	switch (readerResult) {
 	case ArduinoFloppyReader::ADFResult::adfrComplete: {
-		CCompleteDialog dlg(m_sfx, (m_readPage->getImageType() == CReadFromDiskPage::ImageType::itSCP) ? CCompleteDialog::CompleteMessage::cmReadOKSCP : CCompleteDialog::CompleteMessage::cmReadOK);
+		CCompleteDialog dlg(sfx,(m_readPage->getImageType() == CReadFromDiskPage::ImageType::itSCP) ? CCompleteDialog::CompleteMessage::cmReadOKSCP : CCompleteDialog::CompleteMessage::cmReadOK);
 		dlg.DoModal();
 		return;
 	}
@@ -463,7 +472,7 @@ void CArduinoFloppyReaderWinDlg::runThreadRead(CRunningDlg* dlg) {
 	case ArduinoFloppyReader::ADFResult::adfrFileIOError:				MessageBox(L"An error occured writing to the specified file.", L"Output File Error", MB_OK | MB_ICONEXCLAMATION); 
 	case ArduinoFloppyReader::ADFResult::adfrFirmwareTooOld:			MessageBox(L"This requires firmware V1.8 or newer.", L"Firmware out of date", MB_OK | MB_ICONEXCLAMATION);
 	case ArduinoFloppyReader::ADFResult::adfrCompletedWithErrors: {
-		CCompleteDialog dlg(m_sfx, CCompleteDialog::CompleteMessage::cmReadErrors);
+		CCompleteDialog dlg(sfx, CCompleteDialog::CompleteMessage::cmReadErrors);
 		dlg.DoModal();
 		return;
 	}
@@ -609,16 +618,23 @@ void CArduinoFloppyReaderWinDlg::runThreadWrite(CRunningDlg* dlg) {
 	std::string lastError = writer.getLastError();
 	writer.closeDevice();
 
+
+#ifdef COMPLETE_SOUNDEFFECT
+	void* sfx = m_sfx;
+#else
+	void* sfx = nullptr;
+#endif
+
 	switch (readerResult) {
 	case ArduinoFloppyReader::ADFResult::adfrBadSCPFile:			MessageBox(L"Unsupported or incompatiable SCP file", L"File Error", MB_OK | MB_ICONEXCLAMATION); return;
 	case ArduinoFloppyReader::ADFResult::adfrComplete:					
 	{
-		CCompleteDialog dlg(m_sfx, (m_writePage->isVerify()) ? CCompleteDialog::CompleteMessage::cmWroteOK : CCompleteDialog::CompleteMessage::cmWroteNoVerify);
+		CCompleteDialog dlg(sfx, (m_writePage->isVerify()) ? CCompleteDialog::CompleteMessage::cmWroteOK : CCompleteDialog::CompleteMessage::cmWroteNoVerify);
 		dlg.DoModal();
 		return;
 	}
 	case ArduinoFloppyReader::ADFResult::adfrCompletedWithErrors: {
-		CCompleteDialog dlg(m_sfx, CCompleteDialog::CompleteMessage::cmWroteWithErrors);
+		CCompleteDialog dlg(sfx, CCompleteDialog::CompleteMessage::cmWroteWithErrors);
 		dlg.DoModal();
 		return;
 	}
@@ -655,7 +671,13 @@ void CArduinoFloppyReaderWinDlg::runThreadWrite(CRunningDlg* dlg) {
 
 // Show ending message
 void CArduinoFloppyReaderWinDlg::showCompletedDialog(const CCompleteDialog::CompleteMessage message) {
-	CCompleteDialog dlg(m_sfx, message);
+#ifdef COMPLETE_SOUNDEFFECT
+	void* sfx = m_sfx;
+#else
+	void* sfx = nullptr;
+#endif
+
+	CCompleteDialog dlg(sfx, message);
 	dlg.DoModal();
 }
 

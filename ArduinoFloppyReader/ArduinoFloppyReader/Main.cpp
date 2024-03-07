@@ -1,6 +1,6 @@
 /* DRAWBRIDGE aka ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017-2022 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2024 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This program is free software; you can redistribute it and/or

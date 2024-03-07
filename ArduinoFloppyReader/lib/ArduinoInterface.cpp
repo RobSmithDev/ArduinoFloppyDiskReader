@@ -1,6 +1,6 @@
 /* ArduinoFloppyReaderWriter aka DrawBridge
 *
-* Copyright (C) 2017-2022 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2024 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This library is free software; you can redistribute it and/or
@@ -2371,6 +2371,24 @@ void ArduinoInterface::enumeratePorts(std::vector<std::wstring>& portList) {
 
 		portList.push_back(port.portName);
 	}
+}
+
+
+
+// Reset reason information
+DiagnosticResponse ArduinoInterface::getResetReason(bool& WD, bool& BOD, bool& ExtReset, bool& PowerOn) {
+	if ((m_version.major > 1) || ((m_version.major == 1) && (m_version.minor > 9)) || ((m_version.major == 1) && (m_version.minor == 9) && (m_version.buildNumber >= 26))) {
+		// TODO
+		return DiagnosticResponse::drOldFirmware;
+	}
+	return DiagnosticResponse::drOldFirmware;
+}
+DiagnosticResponse ArduinoInterface::clearResetReason() {
+	if ((m_version.major > 1) || ((m_version.major == 1) && (m_version.minor > 9)) || ((m_version.major == 1) && (m_version.minor == 9) && (m_version.buildNumber >= 26))) {
+		// TODO
+		return DiagnosticResponse::drOldFirmware;
+	}
+	return DiagnosticResponse::drOldFirmware;
 }
 
 
