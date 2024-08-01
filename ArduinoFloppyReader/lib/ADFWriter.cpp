@@ -1,6 +1,6 @@
 /* DrawBridge - aka ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017-2023 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2024 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This file is multi-licensed under the terms of the Mozilla Public
@@ -63,6 +63,9 @@ const long long StreamMax = std::numeric_limits<std::streamsize>::max();
 #include "capsapi/Comtype.h"
 #include "capsapi/CapsAPI.h"
 #include "capsapi/CapsPlug.h"
+
+
+#include "ibm_sectors.h"
 
 #include <math.h>
 
@@ -1326,6 +1329,8 @@ public:
 		trackHD = (RawDecodedTrackHD*)malloc(sizeof(RawDecodedTrackHD));
 		disktrackHD = (FullDiskTrackHD*)malloc(sizeof(FullDiskTrackHD));
 		disktrackDD = (FullDiskTrackDD*)malloc(sizeof(FullDiskTrackDD));
+		if (!disktrackDD) return;
+		if (!disktrackHD) return;
 		memset(disktrackDD, 0xAA, sizeof(FullDiskTrackDD));  // Pad with "0"s which as an MFM encoded byte is 0xAA
 		memset(disktrackHD, 0xAA, sizeof(FullDiskTrackHD));  // Pad with "0"s which as an MFM encoded byte is 0xAA
 	}
@@ -1335,6 +1340,388 @@ public:
 		free(disktrackDD);
 	}
 };
+
+ADFResult ADFWriter::runClean(std::function<bool(const uint16_t position, const uint16_t maxPos)>  onProgress) {
+	const uint16_t repeatCount = 5;
+	const uint16_t steps = 8;
+	const uint16_t maxCyl = 80;
+	const uint32_t progressMax = (maxCyl / steps) * 2 * repeatCount;
+
+	if (!onProgress(0, progressMax)) return ADFResult::adfrAborted;
+
+	m_device.checkForDisk(true);
+	if (!m_device.isDiskInDrive()) return ADFResult::adfrCompletedWithErrors;
+
+	DiagnosticResponse res = m_device.enableReading(true, true);
+	if (res != DiagnosticResponse::drOK) return ADFResult::adfrDriveError;
+
+	uint32_t counter = 1;
+
+	for (uint32_t cycle = 0; cycle < repeatCount; cycle++) {
+		for (uint32_t cylinder = 0; cylinder < maxCyl - steps; cylinder += steps) {
+			m_device.selectTrack(cylinder + steps - 1, TrackSearchSpeed::tssSlow);
+			Sleep(200);
+			if (onProgress) {
+				if (!onProgress(++counter, progressMax)) {
+					m_device.enableReading(false);
+					m_device.selectTrack(0, TrackSearchSpeed::tssFast);
+					return ADFResult::adfrAborted;
+				}
+			}
+			m_device.selectTrack(cylinder, TrackSearchSpeed::tssSlow);
+			Sleep(200);
+			if (onProgress) {
+				if (!onProgress(++counter, progressMax)) {
+					m_device.enableReading(false);
+					m_device.selectTrack(0, TrackSearchSpeed::tssFast);
+					return ADFResult::adfrAborted;
+				}
+			}
+		}
+	}
+
+	bool continueRunning = true;
+	if (onProgress) continueRunning = onProgress(progressMax, progressMax);
+
+	m_device.enableReading(false);
+	m_device.selectTrack(0, TrackSearchSpeed::tssFast);
+	return continueRunning ? ADFResult::adfrComplete : ADFResult::adfrAborted;
+}
+
+// Writes an IMG, IMA or ST file to disk. Return FALSE in the callback to abort this operation.  If verify is set then the track isread back and and sector checksums are checked for 11 valid sectors
+ADFResult ADFWriter::sectorFileToDisk(const std::wstring& inputFile, const bool inHDMode, bool verify, bool usePrecompMode, bool eraseFirst, bool useAtariSTTiming, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError, const CallbackOperation operation) > callback) {
+	if (!m_device.isOpen()) return ADFResult::adfrDriveError;
+
+	if (callback)
+		if (callback(0, DiskSurface::dsLower, false, CallbackOperation::coStarting) == WriteResponse::wrAbort) return ADFResult::adfrAborted;
+
+	// Upgrade to writing mode
+	if (m_device.enableWriting(true, true) != DiagnosticResponse::drOK) return ADFResult::adfrDriveError;
+
+	ArduinoFloppyReader::FirmwareVersion version = m_device.getFirwareVersion();
+	bool supportsFluxErase = ((version.major > 1) || ((version.major == 1) && (version.minor == 9) && (version.buildNumber >= 18)));
+
+	// Attempt to open the file
+#ifdef _WIN32	
+	std::ifstream hFile(inputFile, std::ifstream::in | std::ifstream::binary);
+#else
+	std::string inputFileA;
+	quickw2a(inputFile, inputFileA);
+	std::ifstream hADFFile(inputFileA, std::ifstream::in | std::ifstream::binary);
+#endif
+	if (!hFile.is_open()) return ADFResult::adfrFileError;
+
+	// find file size
+	hFile.ignore(StreamMax);
+	std::streamsize fileLength = hFile.gcount();
+	hFile.clear();   //  Since ignore will have set eof.
+	hFile.seekg(0, std::ios_base::beg);
+	
+	if (m_device.setDiskCapacity(inHDMode) != DiagnosticResponse::drOK) return ADFResult::adfrAborted;
+	if (m_device.checkForDisk(true) == DiagnosticResponse::drNoDiskInDrive) return ADFResult::adfrDriveError;
+
+	unsigned int currentTrack = 0;
+	bool errors = false;
+
+	// Read the first sector to see what it is
+	std::vector<uint8_t> track;
+	track.resize(512);
+	hFile.read((char*)&track[0], 512);
+	if (hFile.gcount() != 512) return ADFResult::adfrFileError;
+
+	uint32_t serialNumber;
+	uint32_t numHeads;
+	uint32_t totalSectors;
+	uint32_t sectorsPerTrack;
+	uint32_t bytesPerSector;
+	if (!IBM::getTrackDetails_IBM(track.data(), serialNumber, numHeads, totalSectors, sectorsPerTrack, bytesPerSector)) {
+		// Try and guess
+		bytesPerSector = 512;
+		uint32_t totalSectors = (uint32_t)(fileLength / bytesPerSector);
+		if (totalSectors <= 880) numHeads = 1; else numHeads = 2;
+		totalSectors /= numHeads;
+		if (totalSectors <= 720) sectorsPerTrack = 9; else
+			if (totalSectors <= 800) sectorsPerTrack = 10; else 
+				if (totalSectors <= 1440) sectorsPerTrack = 11; else 
+					return ADFResult::adfrFileError;  // who knows what this is
+	}
+
+	bool fileIsHD = sectorsPerTrack > 11;
+	if (inHDMode != fileIsHD) return ADFResult::adfrMediaSizeMismatch;
+
+	// Make space for each track
+	track.resize(bytesPerSector * sectorsPerTrack);
+	IBM::DecodedSector sectorDecoded;
+	sectorDecoded.data.resize(bytesPerSector);
+	std::vector<uint32_t> mfmBuffer;
+	mfmBuffer.resize(IBM::MaxTrackSize);
+
+	hFile.seekg(0, std::ios_base::beg);
+
+	while (hFile.good()) {
+		hFile.read((char*)&track[0], track.size());
+		std::streamsize bytesRead = hFile.gcount();
+
+		// Stop if we didnt read a full track
+		if (bytesRead != (std::streamsize)track.size()) break;
+
+		const unsigned int cylinder = currentTrack / numHeads;
+		DiskSurface surface = ((currentTrack % numHeads) == 1) ? DiskSurface::dsUpper : DiskSurface::dsLower;
+
+		// Select the track we're working on
+		if (m_device.selectTrack(cylinder) != DiagnosticResponse::drOK) return ADFResult::adfrDriveError;
+		if (m_device.selectSurface(surface) != DiagnosticResponse::drOK) return ADFResult::adfrDriveError;
+
+		// Handle callback
+		if (callback)
+			if (callback(cylinder, surface, false, CallbackOperation::coReadingFile) == WriteResponse::wrAbort) return ADFResult::adfrAborted;
+
+
+		IBM::DecodedTrack trk;
+		for (uint32_t i = 0; i < sectorsPerTrack; i++) {
+			memcpy_s(&sectorDecoded.data[0], sectorDecoded.data.size(), &track[bytesPerSector * i], bytesPerSector);
+			trk.sectors.insert({ i, sectorDecoded });
+		}
+	
+		const uint32_t totalBytesToWrite = IBM::encodeSectorsIntoMFM_IBM(inHDMode, useAtariSTTiming, &trk, currentTrack, mfmBuffer.size(),  &mfmBuffer[0]);		
+
+		// Keep looping until it wrote correctly
+		IBM::DecodedTrack trackRead;
+		trackRead.sectors.clear();
+
+		int failCount = 0;
+		while ((trackRead.sectors.size() < sectorsPerTrack) || (trackRead.sectorsWithErrors))  {
+
+			if (eraseFirst) {
+				// Run the erase cycle twice
+				m_device.eraseCurrentTrack();
+				if (supportsFluxErase) m_device.eraseFluxOnTrack(); else m_device.eraseCurrentTrack();
+				m_device.eraseCurrentTrack();
+			}
+
+			if (callback)
+				if (callback(cylinder, surface, false, failCount > 0 ? CallbackOperation::coRetryWriting : CallbackOperation::coWriting) == WriteResponse::wrAbort) return ADFResult::adfrAborted;
+
+			DiagnosticResponse resp;
+			resp = m_device.writeCurrentTrackPrecomp((const unsigned char*)& mfmBuffer[0], totalBytesToWrite, true, (cylinder >= 40) && usePrecompMode);
+			if (resp == DiagnosticResponse::drOldFirmware) resp = m_device.writeCurrentTrack((const unsigned char*)&mfmBuffer[0], totalBytesToWrite, true);
+
+			switch (resp) {
+			case DiagnosticResponse::drWriteProtected: return ADFResult::adfrDiskWriteProtected;
+			case DiagnosticResponse::drOK: break;
+			default: return ADFResult::adfrDriveError;
+			}
+
+			if (verify) {
+				if (callback)
+					if (callback(cylinder, surface, false, CallbackOperation::coVerifying) == WriteResponse::wrAbort) return ADFResult::adfrAborted;
+
+				for (int retries = 0; retries < 10; retries++) {
+					RawTrackDataHD data;
+					// Read the track back
+					if (m_device.readCurrentTrack(data, inHDMode ? sizeof(RawTrackDataHD) : sizeof(RawTrackDataDD), false) == DiagnosticResponse::drOK) {
+						// Find hopefully all sectors
+						bool nonStandard;
+						trackRead.sectors.clear();
+						IBM::findSectors_IBM(data, sizeof(data) * 8, inHDMode, currentTrack, sectorsPerTrack, trackRead, nonStandard);						
+					}
+					if ((trackRead.sectors.size() == sectorsPerTrack) && (trackRead.sectorsWithErrors==0)) break;
+
+					if (callback)
+						if (callback(cylinder, surface, false, CallbackOperation::coReVerifying) == WriteResponse::wrAbort) return ADFResult::adfrAborted;
+				}
+
+				// So we found all sectors, but were they the ones we actually wrote!?
+				if ((trackRead.sectors.size() == sectorsPerTrack) && (trackRead.sectorsWithErrors == 0)) {
+					int sectorsGood = 0;
+					for (unsigned int sector = 0; sector < sectorsPerTrack; sector++) {
+						auto writtenTrk = trackRead.sectors.find(sector);
+						auto originalTrk = trk.sectors.find(sector);
+						
+						if ((originalTrk != trk.sectors.end()) && (writtenTrk != trackRead.sectors.end()))
+							if (originalTrk->second.data.size() == writtenTrk->second.data.size())
+								if (memcmp(originalTrk->second.data.data(), writtenTrk->second.data.data(), writtenTrk->second.data.size()) == 0) {
+								sectorsGood++;  // this one matches on read!
+							}
+					}
+					if ((unsigned int)sectorsGood != sectorsPerTrack) {
+						// Something went wrong, so we clear them all so it gets reported as an error
+						trackRead.sectors.clear();
+					}
+				}
+
+
+				// We failed to verify this track.
+				if ((trackRead.sectors.size() < sectorsPerTrack) || (trackRead.sectorsWithErrors)) {
+					failCount++;
+					if (failCount >= 5) {
+						if (!callback) break;
+						bool breakOut = false;
+						switch (callback(currentTrack, surface, true, CallbackOperation::coReVerifying)) {
+						case WriteResponse::wrAbort: return ADFResult::adfrAborted;
+						case WriteResponse::wrSkipBadChecksums: breakOut = true; errors = true; break;
+						case WriteResponse::wrContinue: break;
+						default: break;
+						}
+						if (breakOut) break;
+						failCount = 0;
+					}
+				}
+			}
+			else break;
+		}
+
+		currentTrack++;
+		// But there is a physical limit
+		if (currentTrack >= 84*2) break;
+	}
+	
+	return errors ? ADFResult::adfrCompletedWithErrors : ADFResult::adfrComplete;
+}
+
+// Attempt to read a PC or Atari ST disk as a disk sector-based file
+ADFResult ADFWriter::diskToIBMST(const std::wstring& outputFile, const bool inHDMode, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound, const int maxSectors, const CallbackOperation operation)> callback) {
+	if (!m_device.isOpen()) return ADFResult::adfrDriveError;
+
+	if (callback)
+		if (callback(0, DiskSurface::dsLower, 0, 0, 0, 0, CallbackOperation::coStarting) == WriteResponse::wrAbort) return ADFResult::adfrAborted;
+
+	// Attempt ot open the file
+#ifdef _WIN32	
+	std::ofstream hFile = std::ofstream(outputFile, std::ofstream::out | std::ofstream::binary | std::ofstream::trunc);
+#else
+	std::string outputFileA;
+	quickw2a(outputFile, outputFileA);
+	std::ofstream hFile = std::ofstream(outputFileA, std::ofstream::out | std::ofstream::binary | std::ofstream::trunc);
+#endif	
+	if (m_device.setDiskCapacity(inHDMode) != DiagnosticResponse::drOK) return ADFResult::adfrAborted;
+	if (!hFile.is_open()) return ADFResult::adfrFileError;
+
+	// First step is to ID the disk
+	// Select the track we're working on
+	if (m_device.selectTrack(0) != DiagnosticResponse::drOK) return ADFResult::adfrDriveError;
+	if (m_device.selectSurface(DiskSurface::dsLower) != DiagnosticResponse::drOK) ADFResult::adfrDriveError;
+	
+	// To hold a raw track
+	RawTrackDataHD data;
+	const unsigned int readSize = inHDMode ? sizeof(ArduinoFloppyReader::RawTrackDataHD) : sizeof(ArduinoFloppyReader::RawTrackDataDD);
+	bool nonStandard;
+	IBM::DecodedTrack decodedTrack;
+
+	// Retry 10 times to try and guess the format
+	for (uint32_t attempt = 0; attempt < 10; attempt++) {
+		if (callback)
+			if (callback(0, DiskSurface::dsLower, 0, 0, 0, 0, CallbackOperation::coStarting) == WriteResponse::wrAbort) return ADFResult::adfrAborted;
+
+		if (m_device.readCurrentTrack(data, readSize, false) == DiagnosticResponse::drOK) {
+			IBM::findSectors_IBM(data, readSize * 8, inHDMode, 0, 9, decodedTrack, nonStandard);
+			auto trk0 = decodedTrack.sectors.find(0);
+			if (trk0 != decodedTrack.sectors.end()) {
+				if (trk0->second.numErrors < 1) break;
+			}
+		}
+	}
+
+	// Define some defaults
+	uint32_t numHeads = 2;
+	uint32_t numTracks = 80 * numHeads;
+	uint32_t sectorsPerTrack = 9;
+	uint32_t bytesPerSector = 512;
+
+	// And then see if we can actually determine this from the disk
+	auto trk0 = decodedTrack.sectors.find(0);
+	if (trk0 != decodedTrack.sectors.end()) {
+		if (trk0->second.numErrors < 1) {
+			uint32_t serialNumber;
+			uint32_t totalSectors;
+			IBM::getTrackDetails_IBM(trk0->second.data.data(), serialNumber, numHeads, totalSectors, sectorsPerTrack, bytesPerSector);
+		}
+	}
+
+	if ((numHeads < 1) || (numHeads > 2) || (sectorsPerTrack > 21) || (sectorsPerTrack < 3) || (bytesPerSector < 128) || (bytesPerSector > 2048)) {
+		// Defaults
+		numHeads = 2;
+		numTracks = 80 * numHeads;
+		sectorsPerTrack = 9;
+		bytesPerSector = 512;
+	}
+
+	bool includesBadSectors = false;
+
+	// Do all tracks
+	for (unsigned int currentTrack = 0; currentTrack < numTracks; currentTrack++) {
+
+		const uint32_t cylinder = currentTrack / numHeads;
+		const DiskSurface surface = ((currentTrack % numHeads) == 1) ? DiskSurface::dsUpper : DiskSurface::dsLower;
+
+		// Select the track we're working on
+		if (m_device.selectTrack(cylinder) != DiagnosticResponse::drOK) ADFResult::adfrCompletedWithErrors;
+		if (m_device.selectSurface(surface) != DiagnosticResponse::drOK) ADFResult::adfrCompletedWithErrors;
+
+		// Reset (but keep the initial ones!)
+		if (currentTrack > 0) decodedTrack.sectors.clear();
+
+		uint32_t failureTotal = 0;
+
+		bool ignoreChecksums = false;
+
+		// Repeat until we have all 11 sectors
+		while ((decodedTrack.sectors.size() < sectorsPerTrack) || (decodedTrack.sectorsWithErrors))  {
+
+			if (callback) {
+				if ((failureTotal % 6) == 5) {
+					// simulate what the Amiga kinda sounded like it was doing by re-seeking to the track.  This sometimes fixes it, weird eh, and sounds cool
+					if (cylinder < 40) {
+						m_device.selectTrack(cylinder + 30, ArduinoFloppyReader::TrackSearchSpeed::tssSlow);
+					}
+					else {
+						m_device.selectTrack(cylinder - 30, ArduinoFloppyReader::TrackSearchSpeed::tssSlow);
+					}
+					m_device.selectTrack(cylinder);
+				}
+
+				switch (callback(cylinder, surface, failureTotal, sectorsPerTrack - decodedTrack.sectorsWithErrors, decodedTrack.sectorsWithErrors, sectorsPerTrack, failureTotal > 0 ? CallbackOperation::coRetryReading : CallbackOperation::coReading)) {
+				case WriteResponse::wrContinue: break;  // do nothing
+				case WriteResponse::wrRetry:    failureTotal = 0; break;
+				case WriteResponse::wrAbort:    return ADFResult::adfrAborted;
+				case WriteResponse::wrSkipBadChecksums:
+					if (ignoreChecksums) {
+						for (uint32_t i=0; i< sectorsPerTrack; i++)
+							if (decodedTrack.sectors.find(i) == decodedTrack.sectors.end()) {
+								IBM::DecodedSector sec;
+								sec.numErrors = 0;
+								sec.data.resize(bytesPerSector);
+								decodedTrack.sectors.insert({ i, sec });
+							}
+						decodedTrack.sectorsWithErrors = 0;
+					}
+					ignoreChecksums = true;
+					failureTotal = 0;
+					break;
+				}
+			}
+
+			if (m_device.readCurrentTrack(data, readSize, false) == DiagnosticResponse::drOK) {
+				IBM::findSectors_IBM(data, readSize * 8, inHDMode, currentTrack, sectorsPerTrack, decodedTrack, nonStandard);
+				failureTotal++;
+			}
+			else return ADFResult::adfrDriveError;
+		}
+
+		// Now write all of them to disk
+		for (unsigned int sector = 0; sector < sectorsPerTrack; sector++) {
+			try {
+				hFile.write((const char*)decodedTrack.sectors[sector].data.data(), 512);
+			}
+			catch (...) {
+				hFile.close();
+				return ADFResult::adfrFileIOError;
+			}
+		}
+	}
+
+	return includesBadSectors ? ADFResult::adfrCompletedWithErrors : ADFResult::adfrComplete;
+}
 
 // Writes an ADF file back to a floppy disk.  Return FALSE in the callback to abort this operation 
 // IF using precomp mode then DO NOT connect the Arduino via a USB hub, and try to plug it into a USB2 port

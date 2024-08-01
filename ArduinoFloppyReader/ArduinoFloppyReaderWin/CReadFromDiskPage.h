@@ -21,7 +21,7 @@
 #include <string>
 #include "resource.h"
 #include <functional>
-
+enum class ImageType { itADF = 0, itIBM = 1, itST = 2, itSCP = 3, itIPF = 4 };
 
 // CReadFromDiskPage dialog
 
@@ -56,8 +56,7 @@ protected:
 	afx_msg void OnBnClickedBrowse();
 	afx_msg void OnBnClickedStartstop();
 	afx_msg void OnCbnSelchangeDiskformat();
-public:
-	enum class ImageType { itADF = 0, itSCP = 1 };
+public:	
 	enum class NumTracks { nt80, nt82, nt84 };
 	CReadFromDiskPage(std::function<void()> onStart, CWnd* pParent = nullptr);   // standard constructor
 	virtual ~CReadFromDiskPage();

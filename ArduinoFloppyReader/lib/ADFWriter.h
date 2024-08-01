@@ -1,6 +1,6 @@
 /* DrawBridge - aka ArduinoFloppyReader (and writer)
 *
-* Copyright (C) 2017-2023 Robert Smith (@RobSmithDev)
+* Copyright (C) 2017-2024 Robert Smith (@RobSmithDev)
 * https://amiga.robsmithdev.co.uk
 *
 * This file is multi-licensed under the terms of the Mozilla Public
@@ -120,6 +120,8 @@ namespace ArduinoFloppyReader {
 		std::string getLastError() { return m_device.getLastErrorStr(); };
 		DiagnosticResponse getLastErrorCode() { return m_device.getLastError(); };
 
+		ADFResult runClean(std::function<bool(const uint16_t position, const uint16_t maxPos)>  onProgress);
+
 		// Reads the disk and write the data to the ADF file supplied.  The callback is for progress, and you can returns FALSE to abort the process
 		// numTracks is the number of tracks to read.  Usually 80 (0..79), sometimes track 80 and 81 are needed
 		ADFResult DiskToADF(const std::wstring& outputFile, const bool inHDMode, const unsigned int numTracks, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound, const int maxSectors, const CallbackOperation operation)> callback);
@@ -131,6 +133,12 @@ namespace ArduinoFloppyReader {
 
 		// Writes an ADF file back to a floppy disk.  Return FALSE in the callback to abort this operation.  If verify is set then the track isread back and and sector checksums are checked for 11 valid sectors
 		ADFResult ADFToDisk(const std::wstring& inputFile, const bool inHDMode, bool verify, bool usePrecompMode, bool eraseFirst, bool writeFromIndex, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError, const CallbackOperation operation) > callback);
+
+		// Writes an IMG, IMA or ST file to disk. Return FALSE in the callback to abort this operation.  If verify is set then the track isread back and and sector checksums are checked for 11 valid sectors
+		ADFResult sectorFileToDisk(const std::wstring& inputFile, const bool inHDMode, bool verify, bool usePrecompMode, bool eraseFirst, bool useAtariSTTiming, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError, const CallbackOperation operation) > callback);
+
+		// Attempt to read a PC or Atari ST disk as a disk sector-based file
+		ADFResult diskToIBMST(const std::wstring& outputFile, const bool inHDMode, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const int retryCounter, const int sectorsFound, const int badSectorsFound, const int maxSectors, const CallbackOperation operation)> callback);
 
 		// Writes an SCP file back to a floppy disk.  Return FALSE in the callback to abort this operation.  
 		ADFResult SCPToDisk(const std::wstring& inputFile, bool extraErases, std::function < WriteResponse(const int currentTrack, const DiskSurface currentSide, const bool isVerifyError, const CallbackOperation operation) > callback);

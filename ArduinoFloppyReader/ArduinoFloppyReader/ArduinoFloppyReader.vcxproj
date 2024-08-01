@@ -155,6 +155,7 @@
     <ClInclude Include="..\lib\capsapi\CapsPlug.h" />
     <ClInclude Include="..\lib\capsapi\Comtype.h" />
     <ClInclude Include="..\lib\ftdi.h" />
+    <ClInclude Include="..\lib\ibm_sectors.h" />
     <ClInclude Include="..\lib\pll.h" />
     <ClInclude Include="..\lib\RotationExtractor.h" />
     <ClInclude Include="..\lib\SerialIO.h" />
@@ -176,6 +177,7 @@
     </ClCompile>
     <ClCompile Include="..\lib\capsapi\CapsPlug.cpp" />
     <ClCompile Include="..\lib\ftdi.cpp" />
+    <ClCompile Include="..\lib\ibm_sectors.cpp" />
     <ClCompile Include="..\lib\pll.cpp" />
     <ClCompile Include="..\lib\RotationExtractor.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>

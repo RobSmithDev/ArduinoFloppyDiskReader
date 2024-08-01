@@ -63,11 +63,13 @@ BOOL CReadFromDiskPage::OnInitDialog() {
 	buf[0] = '\0';
 	LONG len = 256;
 
-	m_fileformat.AddString(L"ADF");
-	m_fileformat.AddString(L"SCP");
+	m_fileformat.AddString(L"ADF (Amiga)");
+	m_fileformat.AddString(L"IMA (IBM PC)");
+	m_fileformat.AddString(L"ST (Atari ST)");
+	m_fileformat.AddString(L"SCP (Any/Flux)");
 	buf[0] = '\0';
 	len = 10;
-	RegQueryValueW(HKEY_CURRENT_USER, L"Software\\ArduinoFloppyReader\\fileFormat", buf, &len);
+	RegQueryValueW(HKEY_CURRENT_USER, L"Software\\ArduinoFloppyReader\\fileFormat2", buf, &len);
 	int index = wcstol(buf, nullptr, 10);
 	m_fileformat.SetCurSel(index);
 
@@ -94,7 +96,7 @@ void CReadFromDiskPage::saveSettings() {
 	char buffer[20];
 
 	_itoa_s(m_fileformat.GetCurSel(), buffer, 10);
-	RegSetValueA(HKEY_CURRENT_USER, "Software\\ArduinoFloppyReader\\fileFormat", REG_SZ, buffer, strlen(buffer));
+	RegSetValueA(HKEY_CURRENT_USER, "Software\\ArduinoFloppyReader\\fileFormat2", REG_SZ, buffer, strlen(buffer));
 
 	_itoa_s(m_tracks84.GetCheck() ? 84 : (m_tracks82.GetCheck() ? 82 : 80), buffer, 10);
 	RegSetValueA(HKEY_CURRENT_USER, "Software\\ArduinoFloppyReader\\tracks", REG_SZ, buffer, strlen(buffer));
@@ -106,18 +108,25 @@ void CReadFromDiskPage::saveSettings() {
 // CReadFromDiskPage message handlers
 
 
-void CReadFromDiskPage::OnBnClickedBrowse()
-{
-	// szFilters is a text string that includes two file name filters:
-	TCHAR szFilters[] = _T("Amiga Disk Files (*.adf)|*.adf|All Files (*.*)|*.*||");
-	TCHAR szFiltersSCP[] = _T("Supercard Pro Files (*.scp)|*.scp|All Files (*.*)|*.*||");
+void CReadFromDiskPage::OnBnClickedBrowse() {
+	TCHAR* szFilters;
+	TCHAR* szDefault;
+	TCHAR* szTitle;
+	
+	switch (getImageType()) {
+	case ImageType::itADF: szFilters = _T("Amiga Disk Files (*.adf)|*.adf|All Files (*.*)|*.*||"); szDefault = _T("adf"); szTitle = _T("Save Disk to ADF File"); break;
+	case ImageType::itIBM: szFilters = _T("IBM PC Disk Files (*.ima)|*.ima|All Files (*.*)|*.*||"); szDefault = _T("ima"); szTitle = _T("Save Disk to IMA File");  break;
+	case ImageType::itST: szFilters = _T("Atari ST Disk Files (*.st)|*.st|All Files (*.*)|*.*||"); szDefault = _T("st"); szTitle = _T("Save Disk to ST File");  break;
+	case ImageType::itSCP: szFilters = _T("SCP Flux Files (*.scp)|*.scp|All Files (*.*)|*.*||"); szDefault = _T("scp"); szTitle = _T("Save Disk to SCP File");  break;
+	default: return;
+	}
 
 	// Create an Save dialog
 	CString oldFileName;
 	m_filename.GetWindowText(oldFileName);
 
-	CFileDialog fileDlg(FALSE, (getImageType() == ImageType::itSCP) ? _T("scp") : _T("adf"), oldFileName, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NODEREFERENCELINKS | OFN_ENABLESIZING | OFN_DONTADDTORECENT | OFN_EXPLORER, (getImageType() == ImageType::itSCP) ? szFiltersSCP : szFilters, this);
-	if (getImageType() == ImageType::itSCP) fileDlg.m_ofn.lpstrTitle = L"Save Disk to SCP File"; else fileDlg.m_ofn.lpstrTitle = L"Save Disk to ADF File";
+	CFileDialog fileDlg(FALSE, szDefault, oldFileName, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NODEREFERENCELINKS | OFN_ENABLESIZING | OFN_DONTADDTORECENT | OFN_EXPLORER, szFilters, this);
+	fileDlg.m_ofn.lpstrTitle = szTitle;
 
 	// Display it
 	if (fileDlg.DoModal() == IDOK)
@@ -154,16 +163,27 @@ void CReadFromDiskPage::OnCbnSelchangeDiskformat()
 	if (pos > 0) {
 		filename = filename.Left(pos);
 
-		if (getImageType() == ImageType::itSCP) filename += _T(".scp"); else filename += _T(".adf");
+		switch (getImageType()) {
+		case ImageType::itSCP: filename += _T(".scp"); break;
+		case ImageType::itADF: filename += _T(".adf"); break;
+		case ImageType::itST: filename += _T(".st"); break;
+		case ImageType::itIBM: filename += _T(".ima"); break;
+		}
 
 		m_filename.SetWindowText(filename);
 	}
+
+	bool allowTracks = (getImageType() != ImageType::itIBM) && (getImageType() != ImageType::itST);
+	m_tracks80.EnableWindow(allowTracks);
+	m_tracks82.EnableWindow(allowTracks);
+	m_tracks84.EnableWindow(allowTracks && (getImageType() != ImageType::itADF));
 
 	if (getImageType() == ImageType::itSCP) {
 		m_scpdd.ShowWindow(SW_SHOW);
 		m_scphd.ShowWindow(SW_SHOW);
 		m_scp2.ShowWindow(SW_SHOW);
 		m_experimental.ShowWindow(SW_SHOW);
+		
 	}
 	else {
 		m_scpdd.ShowWindow(SW_HIDE);

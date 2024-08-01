@@ -29,7 +29,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
     <UseOfMfc>Dynamic</UseOfMfc>
     <SpectreMitigation>false</SpectreMitigation>
@@ -37,7 +37,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
     <UseOfMfc>Static</UseOfMfc>
@@ -207,12 +207,14 @@
     <ClInclude Include="..\lib\capsapi\CapsPlug.h" />
     <ClInclude Include="..\lib\capsapi\Comtype.h" />
     <ClInclude Include="..\lib\ftdi.h" />
+    <ClInclude Include="..\lib\ibm_sectors.h" />
     <ClInclude Include="..\lib\pll.h" />
     <ClInclude Include="..\lib\RotationExtractor.h" />
     <ClInclude Include="..\lib\SerialIO.h" />
     <ClInclude Include="ArduinoFloppyReaderWin.h" />
     <ClInclude Include="ArduinoFloppyReaderWinDlg.h" />
     <ClInclude Include="CAboutDialog.h" />
+    <ClInclude Include="CCleanDialog.h" />
     <ClInclude Include="CCompleteDialog.h" />
     <ClInclude Include="CDiagnosticsDlg.h" />
     <ClInclude Include="CEEPromDialog.h" />
@@ -246,6 +248,12 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\lib\ibm_sectors.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\lib\pll.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
@@ -264,6 +272,7 @@
     </ClCompile>
     <ClCompile Include="ArduinoFloppyReaderWin.cpp" />
     <ClCompile Include="ArduinoFloppyReaderWinDlg.cpp" />
+    <ClCompile Include="CCleanDialog.cpp" />
     <ClCompile Include="CCompleteDialog.cpp" />
     <ClCompile Include="CReadFromDiskPage.cpp" />
     <ClCompile Include="CRunningDlg.cpp" />

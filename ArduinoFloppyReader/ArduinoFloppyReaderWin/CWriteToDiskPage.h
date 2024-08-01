@@ -22,6 +22,7 @@
 #include <string>
 #include "resource.h"
 #include <functional>
+#include "CReadFromDiskPage.h"
 
 // CWriteToDiskPage dialog
 
@@ -61,7 +62,6 @@ public:
 	const bool isPrecomp() const { return m_precomp.GetCheck() != 0; };
 	const bool isErase() const { return m_erase.GetCheck() != 0; };
 	const bool isIndex() const { return m_index.GetCheck() != 0; };
-	const bool isSCPFile() const;
-	const bool isIPFFile() const;
+	const ImageType fileType() const;
 	afx_msg void OnEnChangeFilename();
 };

@@ -75,6 +75,7 @@
               v1.9.24 More Accurate PLL for both DrawBridge Classic and Plus!
               v1.9.25 Added support for tracks 82 and 83
                       Fixed compiler warnings
+              v1.9.26 Added support to read the state of BOD, just incase the device resets due to motor surges!
                       
 */    
 
@@ -218,9 +219,6 @@ bool disktypeHD = 0;
 // Center position reading HD disks in DB classic mode (this is TIMING_OVERHEAD+DB_CLASSIC_HD_MIDDLE) - this was checked to give the best result with jitter
 #define DB_CLASSIC_HD_MIDDLE -2
 
-
-
-
 // 256 byte circular buffer - don't change this, we abuse the unsigned char to overflow back to zero!
 #define SERIAL_BUFFER_SIZE 256
 #define SERIAL_BUFFER_START (SERIAL_BUFFER_SIZE - 16)
@@ -359,10 +357,28 @@ void setup() {
     PCMSK2 = 0;
     PCMSK1 = 0;
     EIMSK&=~B00000011;  // disable INT0/1 interrupt mask
+
+    // see what reset us
+    powerResetDetect();
     
     // Setup the USART
     prepSerialInterface();
 }
+
+// see what reset us - we keep a bitmask of all the reset reasons just incase we externally reset the device and miss one.
+void powerResetDetect() {
+  // Get reset reasons.  We don't care about power on reset
+  unsigned char reason = MCUSR & (bit(WDRF) | bit(BORF) | bit(EXTRF));
+  unsigned char lastReason;
+  EEPROM.get(12, lastReason);
+
+  // New reset state detected
+  if (reason | lastReason != lastReason) EEPROM.set(12, lastReason | reason);
+
+  // Clear reset flags
+  MCUSR |= bit(BORF) | bit(PORF) | bit(EXTRF) | bit(WDRF);
+}
+
 
 // Refresh bools after eeprom has been written to
 void refreshEEPROMSettings() {
@@ -396,6 +412,8 @@ void refreshEEPROMSettings() {
     EEPROM.get(10, b1);
     EEPROM.get(11, b2);
     alwaysIndexAlignWrites = (((b1 == 0x69) && (b2 == 0x61)));   
+
+    // note EEPROM 12 is reserved for reset detect
      
 }
 
@@ -3525,7 +3543,7 @@ void loop() {
                                   (alwaysIndexAlignWrites ? FLAGS_INDEX_ALIGN_MODE : 0)  
                                   );
                   writeByteToUART(0);  // RFU
-                  writeByteToUART(25);  // build number
+                  writeByteToUART(26);  // build number
                   break;
   
         // Command "." means go back to track 0
@@ -3714,6 +3732,19 @@ void loop() {
 
         case 'E': readEpromValue(); break;
         case 'e': writeEpromValue(); break;
+
+        // Reset reasons
+        case 'B': writeByteToUART('1');
+                  unsigned char lastReason;
+                  EEPROM.get(12, lastReason);
+                  writeByteToUART(lastReason);
+                  break;
+
+        // Clear reset reasons
+        case 'b': writeByteToUART('1');
+                  EEPROM.set(12, 0);
+                  break;
+
     
       // We don't recognise the command!
       default:

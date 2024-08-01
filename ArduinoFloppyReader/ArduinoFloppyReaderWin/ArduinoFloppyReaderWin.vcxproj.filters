@@ -84,6 +84,12 @@
     <ClInclude Include="..\lib\pll.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\lib\ibm_sectors.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="CCleanDialog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ArduinoFloppyReaderWin.cpp">
@@ -126,6 +132,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\lib\pll.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\lib\ibm_sectors.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="CCleanDialog.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

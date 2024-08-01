@@ -342,7 +342,7 @@ void SerialIO::enumSerialPorts(std::vector<SerialPortInformation>& serialPorts) 
 #ifdef __APPLE__
 	DIR* dir = opendir("/dev");
 #else
-	DIR* dir = opendir("/sys/class/tty")
+	DIR* dir = opendir("/sys/class/tty");
 #endif	
 	if (!dir) return;
 	dirent* entry;
