@@ -26,7 +26,7 @@ LFLAGS = -L../lib
 LIBS = -ldl
 
 # define the C source files
-SRCS = Main.cpp ../lib/ftdi.cpp ../lib/SerialIO.cpp ../lib/RotationExtractor.cpp ../lib/pll.cpp ../lib/ArduinoInterface.cpp ../lib/ADFWriter.cpp ../lib/capsapi/CapsPlug.cpp
+SRCS = Main.cpp ../lib/ftdi.cpp ../lib/SerialIO.cpp ../lib/RotationExtractor.cpp ../lib/pll.cpp ../lib/ArduinoInterface.cpp ../lib/ADFWriter.cpp ../lib/capsapi/CapsPlug.cpp ../lib/ibm_sectors.cpp
 
 # define the C object files 
 #
