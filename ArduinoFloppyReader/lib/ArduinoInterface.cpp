@@ -501,6 +501,15 @@ DiagnosticResponse ArduinoInterface::internalOpenPort(const std::wstring& portNa
 	return response;
 }
 
+#ifdef DISKFLASHBACK_KILL
+#ifdef _WIN32
+void releaseVirtualDrives(bool release, int controllerType) {
+	HWND remoteWindow = FindWindow(L"VIRTUALDRIVE_CONTROLLER_CLASS", L"DiskFlashback Tray Control");
+	if (remoteWindow) SendMessage(remoteWindow, WM_USER + 2, (controllerType & 0x7FFF) | (release ? 0 : 0x8000), (LPARAM)GetCurrentProcessId());
+}
+#endif
+#endif
+
 // Attempts to open the reader running on the COM port number provided.  Port MUST support 2M baud
 DiagnosticResponse ArduinoInterface::openPort(const std::wstring& portName, bool enableCTSflowcontrol) {
 	m_lastCommand = LastCommand::lcOpenPort;
@@ -508,6 +517,12 @@ DiagnosticResponse ArduinoInterface::openPort(const std::wstring& portName, bool
 
 	// Quickly force streaming to be aborted
 	m_abortStreaming = true;
+
+#ifdef DISKFLASHBACK_KILL
+#ifdef _WIN32
+	releaseVirtualDrives(true, 0);
+#endif
+#endif
 
 	std::string versionString;
 	m_lastError = internalOpenPort(portName, enableCTSflowcontrol, true, versionString, m_comPort);
@@ -582,6 +597,12 @@ void ArduinoInterface::closePort() {
 	m_isWriteProtected = false;
 	m_diskInDrive = false;
 	m_lastCommand = old;
+#ifdef DISKFLASHBACK_KILL
+#ifdef _WIN32
+	releaseVirtualDrives(false, 0);
+#endif
+#endif
+
 }
 
 // Returns true if the track actually contains some data, else its considered blank or unformatted
