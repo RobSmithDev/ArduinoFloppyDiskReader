@@ -55,6 +55,9 @@ const long long StreamMax = std::numeric_limits<std::streamsize>::max();
 #else
 #include <algorithm>
 #include <netdb.h>
+#include <unistd.h>
+#define Sleep sleep
+#define memcpy_s(a,b,c,d) memcpy(a,c,d)
 #endif 
 
 #include "pll.h"
@@ -1407,7 +1410,7 @@ ADFResult ADFWriter::sectorFileToDisk(const std::wstring& inputFile, const bool 
 #else
 	std::string inputFileA;
 	quickw2a(inputFile, inputFileA);
-	std::ifstream hADFFile(inputFileA, std::ifstream::in | std::ifstream::binary);
+	std::ifstream hFile(inputFileA, std::ifstream::in | std::ifstream::binary);
 #endif
 	if (!hFile.is_open()) return ADFResult::adfrFileError;
 
