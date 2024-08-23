@@ -173,11 +173,6 @@ void CReadFromDiskPage::OnCbnSelchangeDiskformat()
 		m_filename.SetWindowText(filename);
 	}
 
-	bool allowTracks = (getImageType() != ImageType::itIBM) && (getImageType() != ImageType::itST);
-	m_tracks80.EnableWindow(allowTracks);
-	m_tracks82.EnableWindow(allowTracks);
-	m_tracks84.EnableWindow(allowTracks && (getImageType() != ImageType::itADF));
-
 	if (getImageType() == ImageType::itSCP) {
 		m_scpdd.ShowWindow(SW_SHOW);
 		m_scphd.ShowWindow(SW_SHOW);
